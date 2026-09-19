@@ -1,0 +1,15 @@
+# Xcode / build
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# 生成物（xcodegen 从 project.yml 生成）
+*.xcodeproj/
+
+# 其它
+.DS_Store
+*.ipa
+*.dSYM
+
+.workbuddy/memory/

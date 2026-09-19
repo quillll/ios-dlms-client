@@ -1,0 +1,170 @@
+# ============================================================================
+# 出包 · 未签名 IPA（手动触发）
+#
+# 为什么是「未签名」：
+#   1. 只有免费 Apple ID，拿不到 Distribution 证书；
+#   2. 免费 Apple ID 的证书必须绑定具体设备 UDID，而 GitHub 临时 runner
+#      上既没有你的设备，也不该把你的 Apple ID 凭据/私钥传到云端。
+#   → 签名这一步在 Windows 上用 Sideloadly 做（见 docs/GitHub-Actions-构建指南.md）。
+#
+# 所以本工作流只负责：把代码编译成真机 Release 版 .app，再打成标准 .ipa。
+#
+# 触发方式：Actions → 出包 · 未签名 IPA → Run workflow
+# 编译/单测的自动闸门在 ci.yml，这里刻意不重复跑，避免浪费 macOS 额度。
+# ============================================================================
+
+name: 出包 · 未签名 IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ctest:
+        description: 出包前先跑一遍 C 单测（Linux，很便宜，建议保持勾选）
+        type: boolean
+        default: true
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  # 手动触发的出包不要互相打断。
+  cancel-in-progress: false
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  # 便宜的 Linux 前置：C 层不过就别浪费 macOS 额度。
+  c-test:
+    name: 前置 · C 单测（Linux）
+    if: ${{ inputs.run_ctest }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 编译并运行 C 单测
+        run: bash Tests/CTests/run.sh
+
+  ipa:
+    name: 构建未签名 IPA
+    runs-on: macos-15
+    needs: [c-test]
+    # needs 的 job 被 if 跳过时，这里仍要执行。
+    if: ${{ always() && (needs.c-test.result == 'success' || needs.c-test.result == 'skipped') }}
+    timeout-minutes: 45
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 记录工具链版本
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 由 project.yml 生成 Xcode 工程
+        run: xcodegen generate --spec project.yml
+
+      - name: 编译真机版（Release · 不签名）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DLMSApp.xcodeproj \
+            -scheme DLMSApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build 2>&1 | tee build-device.log
+
+      - name: 打成未签名 IPA
+        run: |
+          set -euo pipefail
+
+          APP="build/Build/Products/Release-iphoneos/DLMSApp.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::找不到产物 $APP"
+            echo "--- Release-iphoneos 目录内容 ---"
+            ls -la build/Build/Products/Release-iphoneos/ || true
+            exit 1
+          fi
+
+          # 时间戳 + 运行号，便于区分历史包。
+          STAMP="$(date +%Y%m%d-%H%M)"
+          NAME="DLMSApp-unsigned-${STAMP}-run${{ github.run_number }}"
+
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+
+          # IPA 的规范就是「一个名为 Payload 的目录里放 .app」的 zip。
+          ( cd dist && zip -qry "${NAME}.ipa" Payload )
+          # 附校验值，下载后可比对，排除传输损坏。
+          ( cd dist && shasum -a 256 "${NAME}.ipa" > "${NAME}.ipa.sha256" )
+
+          echo "IPA_NAME=${NAME}.ipa" >> "$GITHUB_ENV"
+          echo "--- dist ---"
+          ls -lh dist
+
+      - name: 生成构建摘要
+        if: success()
+        run: |
+          APP_SIZE="$(du -sh build/Build/Products/Release-iphoneos/DLMSApp.app | cut -f1)"
+          IPA_SIZE="$(du -h "dist/${IPA_NAME}" | cut -f1)"
+          {
+            echo "## ✅ 未签名 IPA 已生成"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 提交 | \`${{ github.sha }}\` |"
+            echo "| Xcode | \`$(xcodebuild -version | head -1)\` |"
+            echo "| .app 大小 | ${APP_SIZE} |"
+            echo "| IPA 大小 | ${IPA_SIZE} |"
+            echo "| 产物名 | \`${IPA_NAME}\` |"
+            echo ""
+            echo "### 下一步（在 Windows 上）"
+            echo ""
+            echo "1. 本次运行页面底部 **Artifacts** → 下载 \`dlms-unsigned-ipa\`；"
+            echo "2. 用 Sideloadly 打开该 .ipa，填免费 Apple ID，点 Start；"
+            echo "3. 装好后：设置 → 通用 → VPN与设备管理 → 信任开发者证书；"
+            echo "4. **7 天后证书过期** —— 重新点一次 Sideloadly 的 Start 即可续期，"
+            echo "   不用重新编译、不用删 App、数据保留。"
+            echo ""
+            echo "详见 \`docs/GitHub-Actions-构建指南.md\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 把错误摘要写进 Job Summary
+        if: failure()
+        run: |
+          {
+            echo "## ❌ 出包失败"
+            echo ""
+            echo '```'
+            grep -E "error:|fatal error:|Undefined symbol" build-device.log | head -40 \
+              || tail -n 60 build-device.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败时保留日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-failure-log
+          path: build-device.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 上传 IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlms-unsigned-ipa
+          path: |
+            dist/*.ipa
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30

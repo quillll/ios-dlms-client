@@ -1,0 +1,94 @@
+name: DLMSApp
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  # ---- 协议核心：vendored Gurux.DLMS.c(客户端子集) + 桥接，编成 framework ----
+  DLMSCore:
+    type: framework
+    platform: iOS
+    sources:
+      # 仅客户端 src（排除 server 侧），header 由搜索路径提供。
+      - path: Sources/DLMSCore/C/src
+        excludes: [ "server.c", "serverevents.c", "notify.c" ]
+      - path: Sources/DLMSCore/Bridge
+    headers:
+      - path: Sources/DLMSCore/Headers
+        buildPhase: headers
+    settings:
+      base:
+        PRODUCT_MODULE_NAME: DLMSCore
+        DEFINES_MODULE: YES
+        MODULEMAP_FILE: "$(SRCROOT)/Sources/DLMSCore/Headers/module.modulemap"
+        PUBLIC_HEADERS_FOLDER_PATH: "$(PRODUCT_NAME).framework/Headers"
+        CLANG_ENABLE_MODULES: YES
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Sources/DLMSCore/C/include"
+        OTHER_CFLAGS:
+          - "-DDLMS_IGNORE_SERVER"
+          - "-Wno-unused-function"
+          - "-Wno-unused-variable"
+          # 新版 clang（Xcode 15/16 起的 clang 15+/16+）把下面这些旧式 C 写法
+          # 从「警告」改成了「默认错误」。vendored 的 Gurux 源码代码风格较老，
+          # 在云端较新的 Xcode 上可能因此中断编译。
+          # 这些开关只影响诊断级别，不改变任何代码行为，可以放心长期保留。
+          - "-Wno-implicit-function-declaration"
+          - "-Wno-implicit-int"
+          - "-Wno-int-conversion"
+          - "-Wno-incompatible-pointer-types"
+          - "-Wno-incompatible-function-pointer-types"
+        SKIP_INSTALL: NO
+
+  # ---- iOS App：依赖 DLMSCore framework ----
+  DLMSApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: DLMSApp
+      - path: Sources/DLMSModels
+      - path: Sources/DLMSBridge
+    dependencies:
+      - target: DLMSCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.DLMSApp
+        PRODUCT_NAME: DLMSApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: DLMS抄表
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "1.0"
+
+  # ---- 托管单测（@testable import DLMSApp）----
+  DLMSAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/SwiftTests
+    dependencies:
+      - target: DLMSApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.DLMSAppTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  DLMSApp:
+    build:
+      targets:
+        DLMSApp: all
+        DLMSAppTests: [test]
+    test:
+      targets:
+        - DLMSAppTests

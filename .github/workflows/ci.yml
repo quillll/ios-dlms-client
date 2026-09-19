@@ -1,0 +1,181 @@
+# ============================================================================
+# CI · 推送闸门
+#
+# 三道闸门（对应方案 §1 的出口标准）：
+#   闸门 2  C 单测（Linux）—— 桥接 + vendor 客户端子集的纯单测
+#                            Linux runner 按 1x 计费，秒级完成，最便宜的一层
+#   闸门 1  模拟器编译（macOS）—— iOS 全量编译，不签名，验证"能编过"
+#   闸门 3  Swift 单测（macOS）—— 模型/解析逻辑的托管单测
+#
+# 成本设计（无 Mac 场景下 macOS 额度是稀缺资源）：
+#   - c-test 放在 ubuntu，且作为 ios 的 needs 前置：C 层挂了就不烧 macOS 额度
+#   - 只用 1 个 macOS job（GitHub 对每个 job 的用量向上取整到整分钟，拆多 job 更贵）
+#   - 纯文档改动不触发（paths-ignore）
+#   - 每个 job 都有 timeout-minutes，卡住不会一直烧
+#
+# 注意：本工作流「不产出 IPA」。要装机包请手动跑 build-ipa.yml。
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - ".workbuddy/**"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".gitignore"
+      - ".workbuddy/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 闸门 2：C 单测（Linux · 1x 计费）
+  # --------------------------------------------------------------------------
+  c-test:
+    name: 闸门2 · C 单测（Linux）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 编译并运行 C 单测
+        run: |
+          set -o pipefail
+          bash Tests/CTests/run.sh 2>&1 | tee ctest.log
+
+      - name: 失败时保留日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-failure-log
+          path: ctest.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # --------------------------------------------------------------------------
+  # 闸门 1 + 3：iOS 编译 + Swift 单测（macOS · 10x 计费）
+  # --------------------------------------------------------------------------
+  ios:
+    name: 闸门1+3 · 模拟器编译与单测
+    # macos-15 为当前较稳的固定标签；不可用时改 macos-14 或 macos-latest。
+    runs-on: macos-15
+    needs: c-test
+    timeout-minutes: 40
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 记录工具链版本（排错用）
+        run: |
+          sw_vers
+          echo "--- xcode-select ---"; xcode-select -p
+          echo "--- xcodebuild ---";  xcodebuild -version
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 由 project.yml 生成 Xcode 工程
+        run: xcodegen generate --spec project.yml
+
+      - name: 列出 scheme 与 target（排错用）
+        run: xcodebuild -list -project DLMSApp.xcodeproj
+
+      - name: 编译（模拟器 · 不签名）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DLMSApp.xcodeproj \
+            -scheme DLMSApp \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build.log
+
+      - name: Swift 单测（模拟器）
+        run: |
+          set -o pipefail
+
+          # 不要硬编码机型名（iPhone 14 在较新的 runner 镜像上可能已不存在）。
+          # 从可用模拟器里动态挑第一个 iPhone。
+          UDID="$(xcrun simctl list devices available \
+                  | grep -E "iPhone" \
+                  | head -1 \
+                  | grep -oE "[0-9A-Fa-f-]{36}" || true)"
+
+          if [ -z "$UDID" ]; then
+            echo "::error::没有找到可用的 iPhone 模拟器，下面是完整列表："
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "使用模拟器 UDID: $UDID"
+
+          xcodebuild \
+            -project DLMSApp.xcodeproj \
+            -scheme DLMSApp \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee test.log
+
+      - name: 把错误摘要写进 Job Summary
+        if: failure()
+        run: |
+          {
+            echo "## ❌ 失败"
+            echo ""
+            echo "完整日志见下方 artifact，或展开对应步骤。"
+            echo ""
+            for f in ctest.log build.log test.log; do
+              if [ -f "$f" ]; then
+                echo "### \`$f\` 中的报错行（最多 30 条）"
+                echo '```'
+                grep -E "error:|fatal error:|Undefined symbol|assert|FAILED" "$f" | head -30 \
+                  || tail -n 40 "$f"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 失败时保留完整日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-failure-log
+          path: |
+            build.log
+            test.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: 成功摘要
+        if: success()
+        run: |
+          {
+            echo "## ✅ 三道闸门全过"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 提交 | \`${{ github.sha }}\` |"
+            echo "| Xcode | \`$(xcodebuild -version | head -1)\` |"
+            echo ""
+            echo "要装机包：**Actions → 出包 · 未签名 IPA → Run workflow**"
+          } >> "$GITHUB_STEP_SUMMARY"

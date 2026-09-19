@@ -1,0 +1,8 @@
+// 模块映射：让 Swift 能 `import DLMSCore`。
+// 仅把 DLMSCore.h（桥接 API）暴露成模块，gx 内部头文件不进入 Swift 视野。
+framework module DLMSCore {
+    umbrella header "DLMSCore.h"
+
+    export *
+    module * { export * }
+}
