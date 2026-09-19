@@ -32,6 +32,7 @@ targets:
         CLANG_ENABLE_MODULES: YES
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/Sources/DLMSCore/C/include"
+          - "$(SRCROOT)/Sources/DLMSCore/Headers"
         OTHER_CFLAGS:
           - "-DDLMS_IGNORE_SERVER"
           - "-Wno-unused-function"
