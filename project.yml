@@ -35,6 +35,7 @@ targets:
           - "$(SRCROOT)/Sources/DLMSCore/Headers"
         OTHER_CFLAGS:
           - "-DDLMS_IGNORE_SERVER"
+          - "-DDLMS_IGNORE_SERIALIZER"
           - "-Wno-unused-function"
           - "-Wno-unused-variable"
           # 新版 clang（Xcode 15/16 起的 clang 15+/16+）把下面这些旧式 C 写法

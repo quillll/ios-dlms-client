@@ -13,7 +13,7 @@ OBJS=()
 for f in "$SRC"/C/src/*.c; do
   b="$(basename "$f" .c)"
   case "$b" in server|serverevents|notify) continue ;; esac
-  "$CC" -O0 -g -DDLMS_IGNORE_SERVER -I"$SRC/C/include" -I"$SRC/Headers" -c "$f" -o "$OUT/$b.o"
+  "$CC" -O0 -g -DDLMS_IGNORE_SERVER -DDLMS_IGNORE_SERIALIZER -I"$SRC/C/include" -I"$SRC/Headers" -c "$f" -o "$OUT/$b.o"
   OBJS+=("$OUT/$b.o")
 done
 
