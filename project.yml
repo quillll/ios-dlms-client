@@ -36,6 +36,14 @@ targets:
         MODULEMAP_FILE: "$(SRCROOT)/Sources/DLMSCore/Headers/module.modulemap"
         PUBLIC_HEADERS_FOLDER_PATH: "$(PRODUCT_NAME).framework/Headers"
         CLANG_ENABLE_MODULES: YES
+        # framework 也必须产出 Info.plist，否则内嵌进 App 后模拟器安装会失败：
+        #   Failed to load Info.plist from bundle at
+        #     .../DLMSApp.app/Frameworks/DLMSCore.framework
+        #   Extra info: Couldn't stat .../DLMSCore.framework/Info.plist
+        # Xcode 在「既没有 INFOPLIST_FILE 也没有 GENERATE_INFOPLIST_FILE」时不会生成 plist。
+        # framework 用生成式最合适：平台相关键（CFBundleSupportedPlatforms 等）由 Xcode 注入，
+        # 手写 plist 反而要自己维护这些键。
+        GENERATE_INFOPLIST_FILE: YES
         HEADER_SEARCH_PATHS:
           - "$(SRCROOT)/Sources/DLMSCore/C/include"
           - "$(SRCROOT)/Sources/DLMSCore/Headers"
