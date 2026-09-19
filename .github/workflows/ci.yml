@@ -148,6 +148,24 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             test 2>&1 | tee test.log
 
+      - name: 失败时把报错打成注解（注解可匿名读取，无需凭据）
+        # 目的：把失败原因变成 check-run annotation。
+        # 注解能用 GitHub API「匿名」读到（公开仓库），
+        # 因此排查 CI 不再需要下载要鉴权的 artifact、也不再需要任何 token，
+        # 从根上避免反复弹登录窗口。
+        # workflow 命令转义规则：% -> %25，\r 去掉。
+        if: failure()
+        run: |
+          for f in ctest.log build.log test.log; do
+            [ -f "$f" ] || continue
+            grep -aE "error:|fatal error:|Undefined symbol|Testing failed|Failed to load|Assertion|failed \(" "$f" \
+              | head -8 \
+              | while IFS= read -r line; do
+                  msg=$(printf '%s' "$line" | sed -e 's/%/%25/g' -e 's/\r//g' | cut -c1-600)
+                  echo "::error::[$f] $msg"
+                done
+          done
+
       - name: 把错误摘要写进 Job Summary
         if: failure()
         run: |

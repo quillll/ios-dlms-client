@@ -93,7 +93,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.DLMSAppTests
-        GENERATE_INFOPLIST_FILE: YES
+        # 同样用显式 Info.plist：GENERATE_INFOPLIST_FILE 在本工程组合下产出过没有 plist 的 bundle。
+        INFOPLIST_FILE: Tests/SwiftTests/Info.plist
 
 schemes:
   DLMSApp:
