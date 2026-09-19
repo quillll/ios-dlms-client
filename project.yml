@@ -20,9 +20,15 @@ targets:
       - path: Sources/DLMSCore/C/src
         excludes: [ "server.c", "serverevents.c", "notify.c" ]
       - path: Sources/DLMSCore/Bridge
-    headers:
+      # 桥接头必须作为「public header」进 Headers 构建阶段，才会被复制到
+      # DLMSCore.framework/Headers/ 下。否则 framework 自身能编过（靠 HEADER_SEARCH_PATHS），
+      # 但 App 侧 `import DLMSCore` 时 Clang 读 framework 内生成的 module.modulemap 会报
+      #   module.modulemap:4:21: error: umbrella header 'DLMSCore.h' not found
+      # 注意：必须写成 sources 条目并显式指明 buildPhase/headerVisibility
+      # （headerVisibility 默认是 public，这里写出来是为了意图明确、避免回退）。
       - path: Sources/DLMSCore/Headers
         buildPhase: headers
+        headerVisibility: public
     settings:
       base:
         PRODUCT_MODULE_NAME: DLMSCore

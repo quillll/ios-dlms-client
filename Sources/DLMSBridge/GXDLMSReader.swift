@@ -10,22 +10,20 @@ import DLMSCore
 // MARK: - 操作类型
 enum DLMSOp { case read, write, method }
 
-// MARK: - C 回调（convention(c)）
+// MARK: - C 回调（C 函数指针）
+//
+// 注意：这里不能写成 `@convention(c) private func ...`。
+// 较新的 Swift 工具链上 `@convention(c)` 只能作用于「类型」，作用于函数声明会报：
+//   error: attribute can only be applied to types, not declarations
+// 正确写法：把「非捕获闭包」赋给带 C 函数指针类型别名的常量。
 
-@convention(c)
-private func dlmsTransportSend(_ user: UnsafeMutableRawPointer?,
-                               _ data: UnsafePointer<UInt8>?,
-                               _ len: Int32) -> Int32 {
+private let dlmsTransportSend: dlmsSendFn = { user, data, len in
     guard let user, let data, len > 0 else { return -1 }
     let t: GXDLMSTransport = Unmanaged.fromOpaque(user).takeUnretainedValue()
     return t.send(Data(bytes: data, count: Int(len))) ? 0 : -1
 }
 
-@convention(c)
-private func dlmsTransportRecv(_ user: UnsafeMutableRawPointer?,
-                               _ buf: UnsafeMutablePointer<UInt8>?,
-                               _ cap: Int32,
-                               _ got: UnsafeMutablePointer<Int32>?) -> Int32 {
+private let dlmsTransportRecv: dlmsRecvFn = { user, buf, cap, got in
     guard let user, let buf, let got, cap > 0 else { return -1 }
     let t: GXDLMSTransport = Unmanaged.fromOpaque(user).takeUnretainedValue()
     guard let d = t.receive(max: Int(cap)) else { return -1 }
@@ -34,11 +32,7 @@ private func dlmsTransportRecv(_ user: UnsafeMutableRawPointer?,
     return 0
 }
 
-@convention(c)
-private func dlmsTransportTrace(_ user: UnsafeMutableRawPointer?,
-                                _ dir: Int32,
-                                _ frame: UnsafePointer<UInt8>?,
-                                _ len: Int32) {
+private let dlmsTransportTrace: dlmsTraceFn = { user, dir, frame, len in
     guard let user, let frame, len > 0 else { return }
     let r: GXDLMSReader = Unmanaged.fromOpaque(user).takeUnretainedValue()
     let bytes = Array(UnsafeBufferPointer(start: frame, count: Int(len)))

@@ -109,6 +109,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build 2>&1 | tee build.log
 
+      - name: 诊断：产物结构（仅编译失败时）
+        # 把关键产物路径打到「日志」里（不是 Job Summary）。
+        # 原因：Job Summary 无法经 GitHub API 读取，而日志可以，
+        # 这样失败原因可以被自动抓取、不用人工截图。
+        if: failure()
+        run: |
+          echo "=== DLMSCore.framework 文件清单（前 40）==="
+          find build/Build/Products/Debug-iphonesimulator/DLMSCore.framework -type f 2>/dev/null | sort | head -40 || true
+          echo "=== DLMSCore.framework/Headers ==="
+          ls -la build/Build/Products/Debug-iphonesimulator/DLMSCore.framework/Headers 2>/dev/null || echo "!! Headers 目录不存在"
+          echo "=== 诊断结束 ==="
+
       - name: Swift 单测（模拟器）
         run: |
           set -o pipefail
