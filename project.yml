@@ -69,10 +69,13 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.DLMSApp
         PRODUCT_NAME: DLMSApp
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: DLMS抄表
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait"
+        # 用仓库里的显式 Info.plist，而不是 GENERATE_INFOPLIST_FILE 合成。
+        # 原因：合成方式在 CI 上产出的 .app 没有 Info.plist，模拟器安装直接失败：
+        #   Testing failed: App installation failed: Unable to Install "DLMS抄表"
+        #   Failed to load Info.plist from bundle at .../DLMSApp.app/Info.plist
+        # 而托管单测（@testable import DLMSApp）必须先装上宿主 App，
+        # 所以这一步会连带把 Swift 单测一起弄挂。
+        INFOPLIST_FILE: DLMSApp/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         CURRENT_PROJECT_VERSION: 1
