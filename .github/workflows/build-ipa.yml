@@ -42,7 +42,9 @@ jobs:
   # 便宜的 Linux 前置：C 层不过就别浪费 macOS 额度。
   c-test:
     name: 前置 · C 单测（Linux）
-    if: ${{ inputs.run_ctest }}
+    # 注意：tag 推送（push 事件）时 inputs.* 不可用，会求值为假 —— 那样发布包就会
+    # 跳过测试闸门。所以这里显式区分事件：push 一律跑，手动触发按勾选项。
+    if: ${{ github.event_name == 'push' || inputs.run_ctest }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
