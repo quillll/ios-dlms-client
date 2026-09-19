@@ -16,6 +16,12 @@
 name: 出包 · 未签名 IPA
 
 on:
+  # 打 tag（如 v0.1.0）即自动出包 —— 等价于手动点 Run workflow，
+  # 但可以用一条命令触发、便于自动化和留版本记号。
+  # 刻意不加 push 到分支的触发：普通提交不需要每次都出真机包。
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       run_ctest:
