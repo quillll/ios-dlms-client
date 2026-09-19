@@ -45,7 +45,7 @@ final class GXDLMSTransport {
         guard let connection = conn else { return false }
         let sem = DispatchSemaphore(value: 0)
         var ok = false
-        connection.send(content: Array(data), completion: .contentProcessed { error in
+        connection.send(content: data, completion: .contentProcessed { error in
             ok = (error == nil); sem.signal()
         })
         _ = sem.wait(timeout: .now() + .milliseconds(recvTimeoutMs))

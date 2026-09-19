@@ -68,6 +68,11 @@ final class GXDLMSReader {
     }
     private func state(_ s: String) { onState?(s) }
 
+    /// Swift String → C `const char*`（空串→NULL；仅在调用期间有效）。
+    private func cStr(_ s: String) -> UnsafePointer<CChar>? {
+        s.isEmpty ? nil : (s as NSString).utf8String
+    }
+
     /// 在后台串行执行一次完整会话（建链→操作→断链）。
     func run(op: DLMSOp?, obis: [UInt8]?, classVal: Int, attr: Int, hex: String?, completion: @escaping () -> Void = {}) {
         workQueue.async {
@@ -101,9 +106,9 @@ final class GXDLMSReader {
         }
 
         // 安全 / 客户端 SystemTitle / IC（可扩展 P2）。
-        dlms_set_security(ctx, Int32(config.security.rawValue), config.akekHex, nil, nil)
+        dlms_set_security(ctx, Int32(config.security.rawValue), cStr(config.akekHex), nil, nil)
         if !config.clientSystemTitleHex.isEmpty {
-            dlms_set_clientSystemTitle(ctx, config.clientSystemTitleHex)
+            dlms_set_clientSystemTitle(ctx, cStr(config.clientSystemTitleHex))
         }
 
         let tUser = Unmanaged<GXDLMSTransport>.passUnretained(transport).toOpaque()
@@ -133,12 +138,12 @@ final class GXDLMSReader {
         case .write:
             state("写 \(codeHex)")
             ret = obis.withUnsafeBufferPointer { p in
-                dlms_write(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), hex, &out, &outLen)
+                dlms_write(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), cStr(hex ?? ""), &out, &outLen)
             }
         case .method:
             state("执行 \(codeHex)")
             ret = obis.withUnsafeBufferPointer { p in
-                dlms_method(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), hex, &out, &outLen)
+                dlms_method(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), cStr(hex ?? ""), &out, &outLen)
             }
         }
 

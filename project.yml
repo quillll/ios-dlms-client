@@ -70,10 +70,11 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "1.0"
 
-  # ---- 托管单测（@testable import DLMSApp）----
+  # ---- 托管单测（宿主 DLMSApp，@testable import DLMSApp）----
   DLMSAppTests:
     type: bundle.unit-test
     platform: iOS
+    hostApplication: DLMSApp
     sources:
       - path: Tests/SwiftTests
     dependencies:

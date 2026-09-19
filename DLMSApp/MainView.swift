@@ -7,7 +7,6 @@
 
 import SwiftUI
 
-@MainActor
 final class SessionModel: ObservableObject {
     @Published var isBusy = false
     @Published var state = "未连接"
@@ -106,7 +105,7 @@ struct MainView: View {
     // MARK: - 读 / 写 / 执行
     private var actionButtons: some View {
         HStack(spacing: 10) {
-            button("读", .primaryColor, .read)
+            button("读", .purple, .read)
             button("写", .blue, .write)
             button("执行", Color.secondary.opacity(0.35), .method)
         }
