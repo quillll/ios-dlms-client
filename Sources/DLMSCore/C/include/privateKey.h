@@ -36,7 +36,7 @@
 #include "gxignore.h"
 #if defined(DLMS_SECURITY_SUITE_1) || defined(DLMS_SECURITY_SUITE_2)
 #include "enums.h"
-#include "byteBuffer.h"
+#include "bytebuffer.h"
 #include "publicKey.h"
 
 #ifdef  __cplusplus

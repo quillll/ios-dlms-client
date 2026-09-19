@@ -86,7 +86,42 @@ git remote add origin https://github.com/<你的用户名>/<仓库名>.git
 git push -u origin main
 ```
 
-推送成功后，去仓库的 **Actions** 标签页，应该能看到 `CI · 编译验证` 正在跑。
+推送成功后，去仓库的 **Actions** 标签页，应该能看到 `CI` 正在跑。
+
+### 3.1 push 之后会按这个顺序发生什么
+
+```
+git push
+   │
+   ├─ 闸门2  C 单测          ubuntu-latest   约 30 秒    ← 最便宜，先跑
+   │         └─ 失败 → 后面全部跳过（不烧 macOS 额度）
+   │
+   └─ 闸门1  模拟器编译      macos-15        约 3-6 分钟  ← 首次编译，最可能出问题
+      闸门3  Swift 单测      同一次 runner
+   ```
+
+**看结果的方式**：进 Actions → 点那次运行 → 左侧点 job 名 → 展开 `编译` / `Swift 单测` 步骤看日志。
+失败时 **Job Summary**（运行页顶部）会直接把报错行贴出来，通常不用下载 artifact。
+
+**预期**：这是这套代码的**第一次真正编译**（之前从没在 macOS 上编过），
+所以第一两次运行红掉是正常的 —— 按 §8 的表对照处理，或者把报错贴给我。
+
+> 迭代顺序是刻意的：C 层错在免费的 Linux 上暴露，只有 C 层过了才会启动 macOS，
+> 这样修 bug 的过程尽量不烧 macOS 额度。
+
+### 3.2 本地已预验证过的部分
+
+push 之前已经在 Windows 上用 gcc 跑过一遍 C 层，结果：
+
+| 检查 | 结果 |
+|---|---|
+| 43 个 vendored C 文件 + 桥接 + 单测编译 | ✅ 通过（仅 `fopen_s` 在 Windows 上的警告，Linux 走 `fopen` 不受影响） |
+| 链接（含 `-lm`） | ✅ 通过 |
+| C 单测运行 | ✅ **ALL PASS**（hex / ctx / variant 三组） |
+| 两个工作流 YAML 语法 | ✅ 解析通过 |
+| 关键文件行尾（CRLF 检查） | ✅ index 内全部为 LF，Linux 上不会因 `\r` 报错 |
+
+也就是说**闸门 2 大概率一次就绿**。风险主要在闸门 1/3（Swift 编译与测试，只能在 macOS 上验证）。
 
 > **仓库设为 public 还是 private？** 这直接影响花不花钱，见 §6。
 

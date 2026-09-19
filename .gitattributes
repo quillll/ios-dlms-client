@@ -1,0 +1,14 @@
+# 行尾固定为 LF。
+#
+# 背景：本项目在 Windows 上开发、在 Linux/macOS 的 CI 上执行。
+# 如果 shell 脚本被带上了 CRLF（Windows 记事本/PowerShell 默认会写 CRLF），
+# Linux 上的 bash 会报出很难懂的错，例如：
+#     /usr/bin/env: 'bash\r': No such file or directory
+#     或 run.sh 里第一行 set -euo pipefail 变成非法选项
+#
+# 这里只固定 CI 会「执行」或「解析」的文件类型，范围刻意收窄，
+# 避免对 vendored 的 Gurux C 源码做全量重新规范化而产生巨大 diff。
+
+*.sh    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
