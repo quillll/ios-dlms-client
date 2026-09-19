@@ -45,7 +45,7 @@ struct ParamsView: View {
     }
 
     private var addressSection: some View {
-        Section("地址 · 封装") {
+        Section {
             Picker("封装协议", selection: $store.config.framing) {
                 ForEach(Framing.allCases) { Text($0.title).tag($0) }
             }
@@ -62,6 +62,8 @@ struct ParamsView: View {
                 HStack { Text("源地址(WR)"); Spacer(); hexField($store.config.wrapperSource) }
                 HStack { Text("目标地址(WR)"); Spacer(); hexField($store.config.wrapperTarget) }
             }
+        } header: {
+            Text("地址 · 封装")
         } footer: {
             Text(store.config.framing == .hdlc
                  ? "HDLC：客户端来自预设，通信地址为逻辑+物理合成值"
@@ -88,13 +90,15 @@ struct ParamsView: View {
     }
 
     private var keysSection: some View {
-        Section("密钥 · SystemTitle（独立，常显）") {
+        Section {
             HStack { Text("LLS 密码"); Spacer(); TextField("00000000", text: $store.config.passwordHex)
                 .multilineTextAlignment(.trailing).font(.system(.body, design: .monospaced)) }
             HStack { Text("aKEK (EM 主密钥)"); Spacer(); TextField("32位hex", text: $store.config.akekHex)
                 .multilineTextAlignment(.trailing).font(.system(.body, design: .monospaced)) }
             HStack { Text("客户端 SystemTitle"); Spacer(); TextField("8字节hex", text: $store.config.clientSystemTitleHex)
                 .multilineTextAlignment(.trailing).font(.system(.body, design: .monospaced)) }
+        } header: {
+            Text("密钥 · SystemTitle（独立，常显）")
         } footer: {
             Text("认证=HLS 时，客户端 SystemTitle 必须在建链前设置（8 字节，16 位 hex）。服务器 SystemTitle 由 AARE 自动回填。")
         }
