@@ -208,7 +208,10 @@ struct MainView: View {
         )
         reader.run(op: op,
                    obis: op == nil ? nil : ObisUtil.parse(currentObis),
-                   classVal: UInt16(NumberInput.parse(currentClassText) ?? 3),
+                   // NumberInput.parse 返回 Int?，?? 3 之后已是 Int；
+                   // GXDLMSReader.run 的 classVal 参数就是 Int（内部再转 UInt16 给 C）。
+                   // 这里不要再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
+                   classVal: NumberInput.parse(currentClassText) ?? 3,
                    attr: Int(currentAttr) ?? 2,
                    hex: requestHex) {
             session.isBusy = false
