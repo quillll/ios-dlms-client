@@ -44,13 +44,17 @@ void dlms_free(dlmsCtx* ctx);
 
 // 安全配置（须在 dlms_initialize 前调用；可多次调用覆盖）。
 //   security: DLMS_SECURITY 值（见上）。
-//   三个密钥 hex 的落点（参数名沿历史命名，含义以此为准）：
-//     akekHex  → settings->cipher.blockCipherKey      （加密密钥；UI 的 GUEK）
-//     authKeyHex→ settings->cipher.authenticationKey   （认证密钥；UI 的 GUAK）
-//     ekHex    → settings->cipher.dedicatedKey         （预留；UI 暂不提供）
+//   三个密钥 hex 的落点。**参数名已与语义对齐**（v1.5 前叫 akekHex / authKeyHex / ekHex，
+//   名字与含义不符：`akekHex` 装的其实是 GUEK。两者都是 16 字节 hex，编译器拦不住传反，
+//   只会表现为"建链失败且难排查"，所以改名而不是靠注释澄清）：
+//     blockCipherKeyHex    → settings->cipher.blockCipherKey     （加密密钥；UI 的 GUEK）
+//     authenticationKeyHex → settings->cipher.authenticationKey  （认证密钥；UI 的 GUAK）
+//     dedicatedKeyHex      → settings->cipher.dedicatedKey       （预留；UI 暂不提供）
 //   任一项传 NULL/空 → 该项保持库内现值，不覆盖。
+//   注：C 参数名不影响 Swift 侧的位置调用，改名不需要改 Swift。
 void dlms_set_security(dlmsCtx* ctx, int security,
-                       const char* akekHex, const char* authKeyHex, const char* ekHex);
+                       const char* blockCipherKeyHex, const char* authenticationKeyHex,
+                       const char* dedicatedKeyHex);
 
 // 客户端自己的 SystemTitle(8B) hex → settings->cipher.systemTitle。须在 AARQ 之前设置（认证=HLS 时必填）。
 // 空 / 非法 / 不足 8 字节时置 8 字节零。应用层留空时由 ConnectionConfig 回退到默认 8 字节。

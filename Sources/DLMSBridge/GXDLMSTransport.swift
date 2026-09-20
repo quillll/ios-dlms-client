@@ -21,6 +21,11 @@ final class GXDLMSTransport {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw DLMSTransportError.invalidPort(port)
         }
+        // D6：先把可能残留的旧连接收掉再建新的。
+        // 原来是直接 `conn = connection` 覆盖：旧 NWConnection 既不 cancel、
+        // 也不释放它的 stateUpdateHandler，多次连接会累积泄漏与残留回调。
+        conn?.cancel()
+        conn = nil
         let connection = NWConnection(host: .init(host), port: endpointPort, using: .tcp)
         conn = connection
         let sem = DispatchSemaphore(value: 0)
@@ -36,7 +41,14 @@ final class GXDLMSTransport {
         }
         connection.start(queue: ioQueue)
         _ = sem.wait(timeout: .now() + .milliseconds(connectTimeoutMs))
-        guard ready else { throw failure ?? DLMSTransportError.connectFailed }
+        if !ready {
+            // D6：连接失败/超时也要收尾 —— 原来直接 throw，连接会停在 .connecting 挂着。
+            // 先清 handler 再 cancel，避免 cancel 触发回调（此时信号量已超时，无意义）。
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+            if conn === connection { conn = nil }
+            throw failure ?? DLMSTransportError.connectFailed
+        }
     }
 
     // MARK: - 同步收发（供 C 回调）

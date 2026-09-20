@@ -9,7 +9,14 @@
 import Foundation
 
 enum ObisImporter {
+    /// 导入文件大小上限。OBIS 清单通常只有几 KB，1 MB 已经非常宽松；
+    /// 目的是避免误选大文件时被一次性读进内存。
+    static let maxImportBytes = 1024 * 1024
+
     static func importResult(from url: URL) throws -> [ObisItem] {
+        // S2：先查大小再决定读不读。原来直接 `String(contentsOf:)` 全量读入，没有任何上限。
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        if size > maxImportBytes { throw ImporterError.tooLarge(size) }
         let raw = try String(contentsOf: url, encoding: .utf8)
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
@@ -121,10 +128,12 @@ private struct ImportEntry: Decodable {
 enum ImporterError: LocalizedError {
     case decode
     case empty
+    case tooLarge(Int)
     var errorDescription: String? {
         switch self {
         case .decode: return "文件无法解析"
         case .empty: return "文件为空或没有有效 OBIS"
+        case .tooLarge(let n): return "文件过大（\(n / 1024) KB），上限 \(ObisImporter.maxImportBytes / 1024) KB"
         }
     }
 }

@@ -40,9 +40,17 @@ final class Store: ObservableObject {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
+    /// 写盘队列：**串行** + **原子写**。
+    /// 串行是为了保证「后一次 persist 覆盖前一次」的顺序不被异步打乱
+    ///（否则旧快照可能后落盘，把新配置写回去）；原子写避免写到一半被读。
+    /// 编码仍留在调用线程（很快），只把真正的磁盘 I/O 挪走。
+    private static let saveQueue = DispatchQueue(label: "dlms.store.save")
+
     private static func save<T: Encodable>(_ v: T, to url: URL) {
         guard let d = try? JSONEncoder().encode(v) else { return }
-        try? d.write(to: url)
+        // P2：原来是主线程同步写盘（Store 是 @MainActor，每次操作完都会调 persist）。
+        // 文件虽小，但低端机或磁盘繁忙时仍可能造成掉帧。
+        saveQueue.async { try? d.write(to: url, options: .atomic) }
     }
     func persist() {
         Store.save(config, to: fileURLs.config)
@@ -71,6 +79,12 @@ final class Store: ObservableObject {
 
     // MARK: - 日志 / 状态
 
+    /// 日志保留上限（UI 只渲染最近 200 条，见 `MainView.logStatusText`）。
+    private static let logLimit = 2000
+    /// 高水位：超过它才做一次裁剪。P1 的关键就在这个滞后量 ——
+    /// 见 `log()` 里的说明。
+    private static let logHighWater = 2500
+
     /// `label` 是报文类型（AARQ / Get-Request / SNRM …）。
     /// 必须透传：View 的 trace 回调是用 LogEntry 重建一条再存进来的，
     /// 这里漏掉 label 的话，报文面板的"类型"列会整列空白。
@@ -78,7 +92,12 @@ final class Store: ObservableObject {
              label: String = "", level: LogEntry.Level = .debug) {
         let e = LogEntry(time: Date(), level: level, kind: kind, text: text, label: label, hex: hex)
         logs.append(e)
-        if logs.count > 2000 { logs.removeFirst(logs.count - 2000) }
+        // P1：不要用 `removeFirst(1)` 逐条裁。到上限后每追加一条都要前移约 2000 个元素
+        //（O(n)），报文高频时这是实打实的主线程热点（叠加 @Published 触发 UI 刷新）。
+        // 改成「超过高水位才一次性切回上限」，把那次 O(n) 摊薄到每 500 条一次。
+        if logs.count > Store.logHighWater {
+            logs = Array(logs.suffix(Store.logLimit))
+        }
     }
     func clearLogs() { logs.removeAll() }
 

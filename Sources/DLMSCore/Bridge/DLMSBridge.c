@@ -103,6 +103,15 @@ static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
                 ret = DLMS_ERROR_CODE_RECEIVE_FAILED;
                 break;
             }
+            // D1：重发前必须丢掉已累积的残帧 —— 重发在语义上是「重新收一遍」。
+            // 否则本次已收到的半截字节会和新响应拼在一起，cl_getData2 会解析出坏帧。
+            // 触发条件是「大帧需要多次 recv 且中途超时」，弱网下最难排查的那类偶发失败。
+            // 这里刻意与函数开头的「新请求重置」保持一致：只重置接收缓冲与 complete，
+            // **不动 reply 的累积数据** —— more-data 序列里 reply 是跨帧复用的，
+            // 清掉它会丢掉前面几帧已解析出的数据。
+            c->rx.size = 0;
+            c->rx.position = 0;
+            reply->complete = 0;
             // 重发（Gurux 例程行为）。
             if (c->send(c->user, data->data, (int)data->size) != 0)
             {
@@ -115,6 +124,11 @@ static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
         {
             c->trace(c->traceUser, 2, tmp, got);
         }
+        // D2：收到数据即视为「本轮成功」，失败计数归零。
+        // 原来 fail 只在 recv 失败时自增、成功路径从不归零，于是
+        // 「整帧生命周期内累计 3 次瞬时超时」就会被当成致命失败提前中止
+        // —— 抖动链路上会过早放弃本可抄成功的读。
+        fail = 0;
         if ((ret = bufAppend(c, tmp, (uint32_t)got)) != 0)
         {
             break;
@@ -214,7 +228,8 @@ static int hexToBytes(gxByteBuffer* out, const char* hex)
 }
 
 void dlms_set_security(dlmsCtx* c, int security,
-                       const char* akekHex, const char* authKeyHex, const char* ekHex)
+                       const char* blockCipherKeyHex, const char* authenticationKeyHex,
+                       const char* dedicatedKeyHex)
 {
     if (c == NULL)
     {
@@ -222,30 +237,30 @@ void dlms_set_security(dlmsCtx* c, int security,
     }
     c->settings.cipher.security = (DLMS_SECURITY)security;
     gxByteBuffer key;
-    if (akekHex != NULL && *akekHex != '\0')
+    if (blockCipherKeyHex != NULL && *blockCipherKeyHex != '\0')
     {
         bb_init(&key);
-        if (hexToBytes(&key, akekHex) == DLMS_ERROR_CODE_OK)
+        if (hexToBytes(&key, blockCipherKeyHex) == DLMS_ERROR_CODE_OK)
         {
             bb_clear(&c->settings.cipher.blockCipherKey);
             bb_set(&c->settings.cipher.blockCipherKey, key.data, key.size);
         }
         bb_clear(&key);
     }
-    if (authKeyHex != NULL && *authKeyHex != '\0')
+    if (authenticationKeyHex != NULL && *authenticationKeyHex != '\0')
     {
         bb_init(&key);
-        if (hexToBytes(&key, authKeyHex) == DLMS_ERROR_CODE_OK)
+        if (hexToBytes(&key, authenticationKeyHex) == DLMS_ERROR_CODE_OK)
         {
             bb_clear(&c->settings.cipher.authenticationKey);
             bb_set(&c->settings.cipher.authenticationKey, key.data, key.size);
         }
         bb_clear(&key);
     }
-    if (ekHex != NULL && *ekHex != '\0')
+    if (dedicatedKeyHex != NULL && *dedicatedKeyHex != '\0')
     {
         bb_init(&key);
-        if (hexToBytes(&key, ekHex) == DLMS_ERROR_CODE_OK)
+        if (hexToBytes(&key, dedicatedKeyHex) == DLMS_ERROR_CODE_OK)
         {
             if (c->settings.cipher.dedicatedKey == NULL)
             {
@@ -567,16 +582,22 @@ static int buildVariantFromHex(const char* hex, dlmsVARIANT* v)
     case DLMS_DATA_TYPE_INT16:
         if (b.size == 3)
         {
-            int16_t val = (int16_t)((b.data[1] << 8) | b.data[2]);
-            r = var_setInt16(v, val);
+            // 与 INT32 一样走无符号中间量（`b.data[1] << 8` 在 int 上不会溢出，
+            // 严格说不算 UB，但两处写法统一更不容易再踩坑）。
+            uint16_t u = (uint16_t)(((uint16_t)b.data[1] << 8) | (uint16_t)b.data[2]);
+            r = var_setInt16(v, (int16_t)u);
         }
         break;
     case DLMS_DATA_TYPE_INT32:
         if (b.size == 5)
         {
-            int32_t val = ((int32_t)b.data[1] << 24) | ((int32_t)b.data[2] << 16) |
-                          ((int32_t)b.data[3] << 8) | b.data[4];
-            r = var_setInt32(v, val);
+            // D3：先用无符号中间量组装，最后再转有符号。
+            // `(int32_t)b.data[1] << 24` 当 b.data[1] >= 0x80 时会把 1 移进符号位，
+            // 按 C11 6.5.7p4 属**未定义行为**（有符号左移溢出）。clang 实际按位翻转处理、
+            // 结果虽对，但不可移植且静态分析会告警。UINT32 分支本来就是无符号写法，这里统一。
+            uint32_t u = ((uint32_t)b.data[1] << 24) | ((uint32_t)b.data[2] << 16) |
+                         ((uint32_t)b.data[3] << 8) | (uint32_t)b.data[4];
+            r = var_setInt32(v, (int32_t)u);
         }
         break;
     case DLMS_DATA_TYPE_UINT8:

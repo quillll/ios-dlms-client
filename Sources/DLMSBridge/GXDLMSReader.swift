@@ -101,7 +101,12 @@ final class GXDLMSReader {
     }
     private func state(_ s: String) { onState?(s) }
 
-    /// Swift String → C `const char*`（空串→NULL；仅在调用期间有效）。
+    /// Swift String → C `const char*`（空串→NULL）。
+    ///
+    /// ⚠️ **仅限同步调用**：指针来自 `(s as NSString).utf8String`，有效期依赖 NSString
+    /// 临时对象的自动释放。当前所有调用都是"C 函数在调用期间消费完指针"，所以安全；
+    /// 若将来要把指针交给异步的、或会保存它的 C 接口，必须改用 `withCString`
+    ///（参见 `syncRun` 里 `pwd.withCString` 的正确写法），否则会 use-after-free。
     private func cStr(_ s: String) -> UnsafePointer<CChar>? {
         s.isEmpty ? nil : (s as NSString).utf8String
     }
@@ -121,6 +126,10 @@ final class GXDLMSReader {
             DispatchQueue.main.async(execute: completion)
         }
     }
+
+    /// 读/写/执行的输出缓冲上限。C 层 `replyValueString` 按 `cap-1` 截断写入，
+    /// 原来只有 512 字节 → 长响应会被静默截断。这里给足余量。
+    private static let outBufferSize = 4096
 
     private func syncRun(op: DLMSOp?, obis: [UInt8]?, classVal: Int, attr: Int, hex: String?) throws -> String {
         transport.recvTimeoutMs = max(config.recvTimeoutMs, 500)
@@ -164,10 +173,9 @@ final class GXDLMSReader {
         guard let obis else { throw DLMSReaderError.noObis }
         let codeHex = HexUtil.format(obis, upper: false)
 
-        var out = [CChar](repeating: 0, count: 512)
-        var outLen: Int32 = 512
+        var out = [CChar](repeating: 0, count: Self.outBufferSize)
+        var outLen: Int32 = Int32(Self.outBufferSize)
         var ret: Int32
-        let value: String
         switch op {
         case .read:
             state("读 \(codeHex)")
@@ -187,9 +195,16 @@ final class GXDLMSReader {
         }
 
         guard ret == 0 else { throw DLMSReaderError.dlmsFailed(errorText(ret)) }
-        value = outLen > 0 ? String(cString: out) : ""
+        // D4：检出「被 C 层截断」。replyValueString 的 outLen 语义是「写入字节数(含 NUL)」，
+        // 截断时 n = cap-1，于是 outLen == cap —— 据此判断，不需要改 C。
+        // 原来只是静默截断：长响应（OCTET_STRING / ProfileGeneric 曲线）显示残缺却毫无提示。
+        let truncated = outLen >= Int32(Self.outBufferSize)
+        var text = outLen > 0 ? String(cString: out) : ""
+        if truncated {
+            text += "\n\n⚠️ 响应超过 \(Self.outBufferSize) 字节上限，已截断显示"
+        }
         state("断链")
-        return value
+        return text
     }
 
     private func check(_ code: Int32, step: String) throws {
