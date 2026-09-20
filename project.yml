@@ -84,6 +84,9 @@ targets:
         # 而托管单测（@testable import DLMSApp）必须先装上宿主 App，
         # 所以这一步会连带把 Swift 单测一起弄挂。
         INFOPLIST_FILE: DLMSApp/Info.plist
+        # App 图标走 Assets.xcassets 的 AppIcon（单尺寸 1024²，Xcode 14+ 会自动生成各档位）。
+        # 资源目录在 `DLMSApp/` 下，被上面 sources 的整目录条目自动收进来，无需单独声明。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         CURRENT_PROJECT_VERSION: 1

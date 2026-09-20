@@ -266,19 +266,29 @@ struct MainView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
     }
 
-    /// 单行报文：时间 | TX·RX | 报文类型 | HEX —— 四列固定宽度，HEX 才能上下对齐。
+    /// 单行报文：**首行**放「时间 | TX·RX | 报文类型」，**HEX 另起一行、从行首铺满整宽**。
+    ///
+    /// 原来 HEX 挤在首行右侧：三列固定宽已占掉约 192pt，窄屏上只剩一百多点宽，
+    /// 稍长的报文就被压成窄窄一条竖着折行，基本没法读。
+    /// 现在 HEX 独占整宽（约能放 40 字符 ≈ 13 字节/行），可读性高得多。
     private func logRow(_ e: LogEntry) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(e.time.dlmsLogText).font(.caption2)
-                .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
-            Text(e.text).font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
-            Text(e.label).font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
-            Text(e.hex ?? "")
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(color(for: e.kind))
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 6) {
+                Text(e.time.dlmsLogText).font(.caption2)
+                    .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
+                Text(e.text).font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
+                Text(e.label).font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            // 纯信息行（无 HEX）只显示首行，不留空行。
+            if let hex = e.hex, !hex.isEmpty {
+                Text(hex)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(color(for: e.kind))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
