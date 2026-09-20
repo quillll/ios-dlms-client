@@ -307,7 +307,7 @@ struct MainView: View {
     private func start(op: DLMSOp?) {
         guard !session.isBusy else { return }
         if op != nil, ObisUtil.parse(currentObis) == nil {
-            store.log(.error, "OBIS 无效，无法执行")
+            store.log(.info, "OBIS 无效，无法执行", level: .error)
             return
         }
         session.isBusy = true
@@ -329,7 +329,9 @@ struct MainView: View {
             onFinish: { value, err in DispatchQueue.main.async {
                 // 结果与状态分开走：不再靠"完成 · "前缀从状态文本里拆值
                 if let value { store.parsedText = value }
-                if let err { store.log(.error, err) }
+                // 注意：第一个参数是 LogEntry.Kind（只有 info/tx/rx）；
+                // 错误级别走 level: —— `error` 是 LogEntry.Level 的成员，别传错位置。
+                if let err { store.log(.info, err, level: .error) }
             } }
         )
         reader.run(op: op,
