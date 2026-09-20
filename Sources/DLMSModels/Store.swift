@@ -71,8 +71,12 @@ final class Store: ObservableObject {
 
     // MARK: - 日志 / 状态
 
-    func log(_ kind: LogEntry.Kind, _ text: String, hex: String? = nil, level: LogEntry.Level = .debug) {
-        let e = LogEntry(time: Date(), level: level, kind: kind, text: text, hex: hex)
+    /// `label` 是报文类型（AARQ / Get-Request / SNRM …）。
+    /// 必须透传：View 的 trace 回调是用 LogEntry 重建一条再存进来的，
+    /// 这里漏掉 label 的话，报文面板的"类型"列会整列空白。
+    func log(_ kind: LogEntry.Kind, _ text: String, hex: String? = nil,
+             label: String = "", level: LogEntry.Level = .debug) {
+        let e = LogEntry(time: Date(), level: level, kind: kind, text: text, label: label, hex: hex)
         logs.append(e)
         if logs.count > 2000 { logs.removeFirst(logs.count - 2000) }
     }

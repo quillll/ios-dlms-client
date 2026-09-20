@@ -1,6 +1,7 @@
 //
 //  DLMSApp.swift
-//  简易 DLMS 抄表工具：设备管理 + OBIS 管理 + TCP 抄读 + 报表导出。
+//  DLMS 抄表调试台：单表 TCP 调试（读/写/执行 + 报文日志 + 数据解析）+ 全局 OBIS 清单。
+//  两个 Tab：调试台 / OBIS 清单。
 //
 
 import SwiftUI

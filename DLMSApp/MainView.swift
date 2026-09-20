@@ -1,8 +1,9 @@
 //
 //  MainView.swift
-//  主调试台（方案 A / v1.2）：
-//   连接摘要 + 连接测试 + ⚙参数页 | 操作对象(类/OBIS/属性/请求数据) | 读/写/执行
-//   数据解析窗(解析开关) | 报文日志(TX/RX/信息多色)
+//  主调试台（v1.5）：
+//   连接摘要 + 连接测试 + ⚙参数页 | 操作对象(类/OBIS/属性/请求数据，带合法性提示)
+//   读 / 写 / 执行（**不做二次确认** —— 用户明确不需要，现场操作要快）
+//   数据解析窗(解析开关 + 清空) | 报文日志(独立滚动 + 自动跟随；时间|TX·RX|类型|HEX 四列对齐；清空)
 //
 
 import SwiftUI
@@ -85,7 +86,7 @@ struct MainView: View {
                 TextField("类 (10/16进制, 如 3 / 0x1F)", text: $currentClassText)
                     .textFieldStyle(.roundedBorder)
                 TextField("属性", text: $currentAttr)
-                    .frame(width: 52).textFieldStyle(.roundedBorder)
+                    .frame(width: 64).textFieldStyle(.roundedBorder)
             }
             HStack {
                 TextField("OBIS（支持 , . - : 与16进制段）", text: $currentObis)
@@ -105,8 +106,10 @@ struct MainView: View {
                     Image(systemName: "chevron.down.circle.fill")
                 }
             }
+            obisHint
             TextField("请求数据 (HEX，e.g. 11 01)", text: $requestHex)
                 .textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
+            requestHexHint
         }
     }
 
@@ -120,6 +123,38 @@ struct MainView: View {
         guard let item = store.obisLibrary.first(where: { $0.code == code }) else { return }
         currentClassText = "\(item.objectClass)"
         currentAttr = "\(item.attribute)"
+    }
+
+    // MARK: - 输入合法性提示
+    //
+    // 原来只有点了按钮才知道输入能不能用（靠日志里蹦一句"OBIS 无效"）。
+    // 这里提前给反馈，样式沿用密钥字段那套「图标 + 字节数」。
+
+    private var obisHint: some View {
+        let parsed = ObisUtil.parse(currentObis)
+        return HStack(spacing: 4) {
+            Image(systemName: parsed != nil ? "checkmark.circle" : "exclamationmark.triangle.fill")
+            Text(parsed != nil
+                 ? "6 段已识别"
+                 : (currentObis.isEmpty ? "如 1.0.1.8.0.255" : "OBIS 需 6 段、每段 0-255"))
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(parsed != nil ? Color.secondary : Color.orange)
+    }
+
+    private var requestHexHint: some View {
+        let digits = HexUtil.normalize(requestHex).count
+        let ok = requestHex.isEmpty || HexUtil.bytes(fromHex: requestHex) != nil
+        return HStack(spacing: 4) {
+            Image(systemName: ok ? "checkmark.circle" : "exclamationmark.triangle.fill")
+            Text(requestHex.isEmpty
+                 ? "写/执行用的 HEX 字节（如 11 01）；留空表示无参数"
+                 : (ok ? "\(digits / 2) 字节" : "HEX 需偶数位且仅含 0-9 A-F"))
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(ok ? Color.secondary : Color.orange)
     }
 
     // MARK: - 读 / 写 / 执行
@@ -203,31 +238,48 @@ struct MainView: View {
     }
 
     private var logList: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if store.logs.isEmpty {
-                Text("（暂无报文）").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(Array(store.logs.suffix(200))) { e in
-                HStack(alignment: .top, spacing: 6) {
-                    Text(e.time.dlmsLogText).font(.caption2)
-                        .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
-                    Text(e.text).font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
-                    // 报文类型单独占一列、固定宽度，这样 HEX 的起始 x 才是恒定的。
-                    // 早前把类型拼进 hex 串中间加两个空格：类型名长度不一
-                    // （AARQ 4 字符 / Get-Response 12 字符）就又把 HEX 挤错位了。
-                    Text(e.label).font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
-                    Text(e.hex ?? "")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(color(for: e.kind))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if store.logs.isEmpty {
+                        Text("（暂无报文）").font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(Array(store.logs.suffix(200))) { e in
+                        logRow(e).id(e.id)
+                    }
                 }
+                .padding(.vertical, 2)
+            }
+            // 日志是**无限追加**的：以前它跟着整页一起滚，新报文落在下方根本看不到，
+            // 攒到 200 行时整页被拉得极长。这里给它「独立滚动 + 固定高度」，
+            // 有新报文时自动滚到底。
+            // （一次操作结束后不再有新流量，所以此时可以自由向上翻阅历史。）
+            .frame(height: 260)
+            .onChange(of: store.logs.count) { _ in
+                guard let last = store.logs.last else { return }
+                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+
+    /// 单行报文：时间 | TX·RX | 报文类型 | HEX —— 四列固定宽度，HEX 才能上下对齐。
+    private func logRow(_ e: LogEntry) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(e.time.dlmsLogText).font(.caption2)
+                .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
+            Text(e.text).font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
+            Text(e.label).font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+            Text(e.hex ?? "")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(color(for: e.kind))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func color(for kind: LogEntry.Kind) -> Color {
@@ -239,10 +291,13 @@ struct MainView: View {
     }
 
     // MARK: - 执行
+
+    /// 入口（读/写/执行按钮 + 连接测试都走这里）。
+    /// 刻意**不做**写/执行的二次确认 —— 用户明确不需要（现场操作要快）。
     private func start(op: DLMSOp?) {
         guard !session.isBusy else { return }
         if op != nil, ObisUtil.parse(currentObis) == nil {
-            store.log(.info, "OBIS 无效")
+            store.log(.error, "OBIS 无效，无法执行")
             return
         }
         session.isBusy = true
@@ -255,13 +310,16 @@ struct MainView: View {
         let reader = GXDLMSReader(
             config: cfg,
             onTrace: { e in DispatchQueue.main.async {
-                store.log(e.kind, e.text, hex: e.hex)
+                // label 必须一起透传，否则报文面板的"类型"列会整列空白
+                store.log(e.kind, e.text, hex: e.hex, label: e.label)
             } },
             onState: { s in DispatchQueue.main.async {
                 session.state = s
-                if s.hasPrefix("完成 · ") {
-                    store.parsedText = String(s.dropFirst("完成 · ".count))
-                }
+            } },
+            onFinish: { value, err in DispatchQueue.main.async {
+                // 结果与状态分开走：不再靠"完成 · "前缀从状态文本里拆值
+                if let value { store.parsedText = value }
+                if let err { store.log(.error, err) }
             } }
         )
         reader.run(op: op,

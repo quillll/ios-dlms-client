@@ -46,7 +46,10 @@ enum ObisImporter {
             let code = fields[0].trimmingCharacters(in: .whitespaces)
             let name = fields.count > 1 ? fields[1] : code
             let unit = fields.count > 2 ? fields[2] : ""
-            return makeItem(code: code, name: name, unit: unit)
+            // 可选的第 4/5 列：接口类、属性（与 JSON 的 objectClass / attribute 对齐）
+            let cls = fields.count > 3 ? NumberInput.parse(fields[3]) : nil
+            let attr = fields.count > 4 ? NumberInput.parse(fields[4]) : nil
+            return makeItem(code: code, name: name, unit: unit, objectClass: cls, attribute: attr)
         }
     }
 
@@ -67,10 +70,13 @@ enum ObisImporter {
         return fields
     }
 
-    private static func makeItem(code: String, name: String, unit: String) -> ObisItem? {
+    private static func makeItem(code: String, name: String, unit: String,
+                                 objectClass: Int? = nil, attribute: Int? = nil) -> ObisItem? {
         guard isValid(code: code) else { return nil }
         return ObisItem(code: normalize(code), name: name.isEmpty ? code : name,
-                        unit: unit, objectClass: 3, attribute: 2, enabled: true)
+                        unit: unit,
+                        objectClass: objectClass ?? 3, attribute: attribute ?? 2,
+                        enabled: true)
     }
 
     /// 校验 6 段 OBIS："1.0.1.8.0.255" 或 IEC "1-0:1.8.0*255"。
@@ -96,6 +102,8 @@ private struct ImportEntry: Decodable {
     var unit: String?
     var objectClass: Int?
     var attribute: Int?
+    /// 量纲/倍率。之前缺这个字段 → 导入带 scaling 的 JSON 会**静默丢掉**。
+    var scaling: String?
 
     func toItem() -> ObisItem? {
         guard ObisImporter.isValid(code: code) else { return nil }
@@ -105,6 +113,7 @@ private struct ImportEntry: Decodable {
             unit: unit ?? "",
             objectClass: objectClass ?? 3,
             attribute: attribute ?? 2,
+            scaling: scaling ?? "",
             enabled: true)
     }
 }

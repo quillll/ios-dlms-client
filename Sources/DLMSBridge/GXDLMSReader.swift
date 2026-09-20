@@ -49,12 +49,20 @@ final class GXDLMSReader {
     private let workQueue = DispatchQueue(label: "dlms.reader.work")
     private var onTrace: ((LogEntry) -> Void)?
     private var onState: ((String) -> Void)?
+    /// 会话结束回调：(成功值, 失败描述)，两者恰有一个非 nil。
+    /// 之前没有这个回调，而是把结果拼进状态文本（`"完成 · xxx"`）再由 View 拆前缀 —— 
+    /// 一旦状态文案里出现同样字样就会误判，太脆。
+    private var onFinish: ((String?, String?) -> Void)?
 
-    init(config: ConnectionConfig, onTrace: @escaping (LogEntry) -> Void, onState: @escaping (String) -> Void) {
+    init(config: ConnectionConfig,
+         onTrace: @escaping (LogEntry) -> Void,
+         onState: @escaping (String) -> Void,
+         onFinish: @escaping (String?, String?) -> Void = { _, _ in }) {
         self.config = config
         self.transport = GXDLMSTransport()
         self.onTrace = onTrace
         self.onState = onState
+        self.onFinish = onFinish
     }
 
     func emitTrace(direction: LogEntry.Kind, frame: [UInt8]) {
@@ -103,9 +111,12 @@ final class GXDLMSReader {
         workQueue.async {
             do {
                 let value = try self.syncRun(op: op, obis: obis, classVal: classVal, attr: attr, hex: hex)
-                self.state("完成 · \(value)")
+                self.state("完成")
+                self.onFinish?(value, nil)
             } catch {
-                self.state("失败 · \(error.localizedDescription)")
+                let msg = error.localizedDescription
+                self.state("失败 · \(msg)")
+                self.onFinish?(nil, msg)
             }
             DispatchQueue.main.async(execute: completion)
         }
