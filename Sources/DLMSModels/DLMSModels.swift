@@ -1,7 +1,8 @@
 //
 //  DLMSModels.swift
 //  数据模型 + 纯逻辑工具（可单测，不依赖 UIKit/C）。
-//  遵循方案 v1.2：单表调试台 · 全局 OBIS · 认证/加密/密钥独立。
+//  遵循方案（v1.3）：单表调试台 · 全局 OBIS · 认证/加密/密钥独立；
+//  密钥口径 GUAK(认证)/GUEK(加密)，默认全 0，客户端 SystemTitle 有默认值。
 //
 
 import Foundation
@@ -58,7 +59,8 @@ enum SecurityMode: Int, Codable, CaseIterable, Identifiable {
         case .authEncryption: return "认证加密"
         }
     }
-    var needsAKEK: Bool { self == .authEncryption }
+    /// 是否依赖加密密钥（GUEK）：仅加密 / 认证加密均需 GUEK，仅认证走 GUAK。
+    var needsGUEK: Bool { self == .encryption || self == .authEncryption }
 }
 
 // MARK: - HDLC 客户端地址预设（IEC 62056 常用子集）
@@ -105,8 +107,9 @@ struct ObisItem: Codable, Identifiable, Hashable {
     var code: String                 // 任意分隔，如 1.0.1.8.0.255
     var name: String = ""
     var unit: String = ""
-    var objectClass: ObisClass = .register
+    var objectClass: Int = 3         // 接口类(IC)，可为任意值（10/16 进制）
     var attribute: Int = 2
+    var scaling: String = ""         // 量纲/倍率（可选，仅展示）
     var enabled: Bool = true
 
     var displayName: String { name.isEmpty ? code : "\(name) · \(code)" }
@@ -125,6 +128,10 @@ struct LogEntry: Identifiable, Equatable {
 }
 
 // MARK: - 连接配置（单表 · 记住上次）
+//
+// ⚠️ 改这个结构体的字段（改名/新增）时，必须同步下面的 `init(from:)`：
+//    那里按「缺键 → 用默认值」逐项兜底，否则旧的 config.json 会整份解码失败，
+//    用户的 IP/端口/密钥会被静默重置回默认。
 struct ConnectionConfig: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var ip: String = "10.10.10.1"
@@ -138,10 +145,60 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     var wrapperTarget: UInt32 = 0x01
     var auth: Auth = .highGMAC                  // 认证默认 HLS-GMAC
     var security: SecurityMode = .none          // 信息加密默认 NONE
-    var passwordHex: String = "00000000"        // LLS 密码
-    var akekHex: String = ""                    // aKEK/EM 主密钥
-    var clientSystemTitleHex: String = ""       // 客户端自己的 SystemTitle(8B)，HLS 必填
+    var passwordHex: String = "00000000"        // LLS 密码（按 ASCII 直传给 cl_init）
+    var guakHex: String = ConnectionConfig.zeroAES128Key
+    // ↑ GUAK 全局单播认证密钥(16B) → settings->cipher.authenticationKey
+    var guekHex: String = ConnectionConfig.zeroAES128Key
+    // ↑ GUEK 全局单播加密密钥(16B) → settings->cipher.blockCipherKey
+    var clientSystemTitleHex: String = ConnectionConfig.defaultClientSystemTitle
+    // ↑ 客户端自己的 SystemTitle(8B) → settings->cipher.systemTitle（HLS 须在 AARQ 前设置，R13）
     var parseEnabled: Bool = true
+
+    /// 全 0 AES-128 密钥（32 位 hex）—— GUAK / GUEK 默认值。
+    static let zeroAES128Key = "00000000000000000000000000000000"
+    /// 客户端 SystemTitle 默认值（8 字节 = ASCII "ABC01234"）。
+    static let defaultClientSystemTitle = "4142433031323334"
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.dlmsValue(.id, id)
+        ip = c.dlmsValue(.ip, ip)
+        port = c.dlmsValue(.port, port)
+        recvTimeoutMs = c.dlmsValue(.recvTimeoutMs, recvTimeoutMs)
+        framing = c.dlmsValue(.framing, framing)
+        clientPreset = c.dlmsValue(.clientPreset, clientPreset)
+        clientAddress = c.dlmsValue(.clientAddress, clientAddress)
+        serverAddress = c.dlmsValue(.serverAddress, serverAddress)
+        wrapperSource = c.dlmsValue(.wrapperSource, wrapperSource)
+        wrapperTarget = c.dlmsValue(.wrapperTarget, wrapperTarget)
+        auth = c.dlmsValue(.auth, auth)
+        security = c.dlmsValue(.security, security)
+        passwordHex = c.dlmsValue(.passwordHex, passwordHex)
+        guakHex = c.dlmsValue(.guakHex, guakHex)
+        guekHex = c.dlmsValue(.guekHex, guekHex)
+        clientSystemTitleHex = c.dlmsValue(.clientSystemTitleHex, clientSystemTitleHex)
+        parseEnabled = c.dlmsValue(.parseEnabled, parseEnabled)
+    }
+
+    // MARK: 密钥取值（留空 → 默认值；顺带做 hex 归一化）
+    //
+    // 归一化只去掉空白与 `:` `-` 分隔符，非法字符原样保留，
+    // 这样「AB CD EF…」能直接用，而「GG」不会被悄悄当成空值吞掉。
+
+    /// GUAK 认证密钥 hex；留空按全 0 AES-128。
+    var guakEffective: String { Self.effectiveKey(guakHex, fallback: Self.zeroAES128Key) }
+    /// GUEK 加密密钥 hex；留空按全 0 AES-128。
+    var guekEffective: String { Self.effectiveKey(guekHex, fallback: Self.zeroAES128Key) }
+    /// 客户端 SystemTitle hex；留空按默认 8 字节。
+    var clientSystemTitleEffective: String { Self.effectiveKey(clientSystemTitleHex, fallback: Self.defaultClientSystemTitle) }
+
+    private static func effectiveKey(_ raw: String, fallback: String) -> String {
+        let n = HexUtil.normalize(raw)
+        return n.isEmpty ? fallback : n
+    }
 
     /// 运行时 source/client 地址（封装相关）。
     var source: UInt32 { framing == .wrapper ? wrapperSource : clientAddress }
@@ -151,6 +208,14 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         framing == .wrapper
             ? "Wrapper 源\(wrapperSource.hex2) 目标\(wrapperTarget.hex2)"
             : "HDLC 客户端\(clientAddress.hex2) 通信\(serverAddress.hex4)"
+    }
+}
+
+// 缺键 / 类型不符 → 回退默认值（Decodable 合成实现不会这么做，故手写）。
+private extension KeyedDecodingContainer {
+    func dlmsValue<T: Decodable>(_ key: Key, _ fallback: T) -> T {
+        guard let v = try? decodeIfPresent(T.self, forKey: key) else { return fallback }
+        return v ?? fallback
     }
 }
 
@@ -179,6 +244,28 @@ enum HexUtil {
     /// 把 hex 字节数组格式化为日志空格分隔串。
     static func format(_ bytes: [UInt8], upper: Bool = true) -> String {
         bytes.map { String(format: upper ? "%02X" : "%02x", $0) }.joined(separator: " ")
+    }
+    /// 归一化 hex 文本：去掉空白与 `:` `-` 分隔符并转大写（交给 C 之前统一处理）。
+    /// 非法字符原样保留（不做静默丢弃），便于上层做长度/合法性校验。
+    static func normalize(_ string: String) -> String {
+        String(string.filter { !$0.isWhitespace && $0 != ":" && $0 != "-" }).uppercased()
+    }
+    /// 归一化后是否为「指定字节数 + 全合法 hex」。
+    static func isValid(_ string: String, byteCount: Int) -> Bool {
+        let n = normalize(string)
+        return n.count == byteCount * 2 && n.allSatisfy { $0.isHexDigit }
+    }
+}
+
+/// 数值输入：自动识别 16/10 进制（含 a-f 或 0x 前缀 → 16 进制）。用于类/属性等。
+enum NumberInput {
+    static func parse(_ s: String) -> Int? {
+        let raw = s.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return nil }
+        let low = raw.lowercased()
+        let isHex = low.contains { "abcdef".contains($0) } || low.hasPrefix("0x")
+        let base = isHex ? 16 : 10
+        return Int(isHex && low.hasPrefix("0x") ? String(low.dropFirst(2)) : low, radix: base)
     }
 }
 

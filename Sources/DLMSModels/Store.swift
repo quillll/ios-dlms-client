@@ -89,7 +89,7 @@ final class Store: ObservableObject {
 // 内置常用 OBIS 预置。
 extension ObisItem {
     static let presets: [ObisItem] = [
-        ObisItem(code: "0.0.1.0.0.255", name: "逻辑设备名", objectClass: .data),
+        ObisItem(code: "0.0.1.0.0.255", name: "逻辑设备名", objectClass: 1),
         ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", unit: "kWh"),
         ObisItem(code: "1.0.2.8.0.255", name: "反向有功总电量", unit: "kWh"),
         ObisItem(code: "1.0.1.7.0.255", name: "当前功率", unit: "kW"),

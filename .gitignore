@@ -13,3 +13,4 @@ xcuserdata/
 *.dSYM
 
 .workbuddy/memory/
+.vscode/

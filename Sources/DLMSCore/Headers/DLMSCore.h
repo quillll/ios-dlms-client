@@ -44,11 +44,16 @@ void dlms_free(dlmsCtx* ctx);
 
 // 安全配置（须在 dlms_initialize 前调用；可多次调用覆盖）。
 //   security: DLMS_SECURITY 值（见上）。
-//   akekHex / authKeyHex / ekHex: 对应密钥的 hex（akEK 为 EM/主密钥）。可传 NULL/空。
+//   三个密钥 hex 的落点（参数名沿历史命名，含义以此为准）：
+//     akekHex  → settings->cipher.blockCipherKey      （加密密钥；UI 的 GUEK）
+//     authKeyHex→ settings->cipher.authenticationKey   （认证密钥；UI 的 GUAK）
+//     ekHex    → settings->cipher.dedicatedKey         （预留；UI 暂不提供）
+//   任一项传 NULL/空 → 该项保持库内现值，不覆盖。
 void dlms_set_security(dlmsCtx* ctx, int security,
                        const char* akekHex, const char* authKeyHex, const char* ekHex);
 
 // 客户端自己的 SystemTitle(8B) hex → settings->cipher.systemTitle。须在 AARQ 之前设置（认证=HLS 时必填）。
+// 空 / 非法 / 不足 8 字节时置 8 字节零。应用层留空时由 ConnectionConfig 回退到默认 8 字节。
 void dlms_set_clientSystemTitle(dlmsCtx* ctx, const char* hex);
 
 // IC：读/写 settings->cipher.invocationCounter（无公开 setter，直接赋值）。

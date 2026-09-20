@@ -1,7 +1,14 @@
-# DLMS 抄表调试台 iOS —— 详细方案（v1.2）
+# DLMS 抄表调试台 iOS —— 详细方案（v1.3）
 
-> 状态：已完成外部技术审查并就源码逐条核实，更新到 v1.2，等待开工（P0→P1 先行）
-> v1.2 变更（依据 `docs/DLMS调试台-方案-审查与改进.md`，已对 vendored 源码核实）：
+> 状态：已就源码逐条核实；v1.3 为「密钥可配置化」增量（设置页 + 数据模型 + 建链映射），仍按 P0→P1 推进
+> v1.3 变更（密钥可配置化，用户口径）：
+> ⑧ 设置页密钥区改为 **GUAK / GUEK 两条独立输入**（取代原「aKEK/EM 主密钥」单条）；
+>    **GUAK → `settings->cipher.authenticationKey`**，**GUEK → `settings->cipher.blockCipherKey`**；
+>    两者默认均为 **16 字节全 0（AES-128）**，留空同样按全 0 处理；**MK / GBEK 暂不提供**（`dedicatedKey` 槽位预留）；
+>    客户端 SystemTitle 默认改为 **`4142433031323334`（ASCII "ABC01234"）**，留空即用该默认；
+>    hex 输入在交给 C 之前统一归一化（去空白与 `:` `-` 并转大写）；`ConnectionConfig` 解码改为「缺键回退默认」，
+>    旧 `config.json` 不再因字段增删而整份失效。风险登记新增 **R19**。
+> v1.2 变更（原《审查与改进》已并入本文件，已对 vendored 源码核实）：
 > ① 新增 **P0 修桥**（现有 `DLMSBridge.c` 3 处 bug：接收缓冲覆盖、512B 过小、Wrapper 误发 SNRM、断链缺 RLRQ、超时未参数化）；
 > ② **修正 `cl_writeLN` 签名**（第5参 `dlmsVARIANT*`、第6参 `byteArray`，写走 `byteArray=1`+`bb_addHexString`）；
 > ③ **修正 HLS challenge** 为 `cl_getApplicationAssociationRequest/parse...Response`；
@@ -37,8 +44,10 @@
 | 通信地址(服务器)/HDLC | `00013FFF`（Wrapper 用 源/目标 = `0001/0001`） |
 | 认证方式 | **`HLS-GMAC`**（独立下拉） |
 | 信息加密 | **`NONE`**（独立下拉） |
-| 密钥 | 仅 **LLS密码 + aKEK + 客户端SystemTitle**（无 HLS密钥/AK/EK；服务器SystemTitle自动捕获） |
-| 客户端SystemTitle | 常显（默认 HLS-GMAC 需它在 AARQ 前设置，见 R13）；认证选 HLS 时标为必填 |
+| 密钥 · GUAK | **16 字节全 0**（32 位 hex），可改；留空按全 0 → `cipher.authenticationKey` |
+| 密钥 · GUEK | **16 字节全 0**（32 位 hex），可改；留空按全 0 → `cipher.blockCipherKey` |
+| 客户端SystemTitle | **`4142433031323334`**（ASCII "ABC01234"），可改；留空即用该默认（R13） |
+| 密钥 · MK / GBEK | **暂不提供**（`dedicatedKey` 槽位预留；服务器 SystemTitle 自动捕获，不作输入） |
 | 解析使能 | 开 |
 | 建链/断链 | 一键操作 → 一律自动建链→执行→自动断链（无自动会话开关） |
 | 重复点按钮 | 串行队列 + busy 禁用按钮，不做硬中断（R8） |
@@ -58,8 +67,8 @@
 │   HDLC : 客户端[预设下拉+自定义hex] · 通信地址(服务器) hex（如 00013FFF）│
 │   Wrapper: 源(默认0001) · 目标(默认0001，逻辑地址固定) │
 │ 应用：认证 NONE/LLS/HLS-GMAC            │
-│       信息加密 NONE/仅加密/仅认证/认证加密(aKEK)   │
-│       LLS密码·HLS密钥·EM(aKEK)·AK·EK·服务器SystemTitle·客户端SystemTitle │
+│       信息加密 NONE/仅加密/仅认证/认证加密(GUEK)   │
+│       LLS密码 · GUAK(16B) · GUEK(16B) · 客户端SystemTitle │
 │ 其它：日志级别 · 解析使能(开关) · 手动连/断 · 更多设置 │
 ├ 操作对象 ───────────────────────────┤
 │ 类[×] · OBIS[下拉全局清单/手输] · 属性/方法[×]    │
@@ -79,7 +88,8 @@
 
 ## 4. 数据模型（JSON 文件存储）
 
-- **`ConnectionConfig`**：IP、端口、超时、封装(HDLC/Wrapper)、客户端地址(预设+自定义)、通信地址/源/目标、认证、信息加密、五密钥、双 SystemTitle、日志级别、解析使能 —— **记住上次**。
+- **`ConnectionConfig`**：IP、端口、超时、封装(HDLC/Wrapper)、客户端地址(预设+自定义)、通信地址/源/目标、认证、信息加密、三密钥(LLS密码/GUAK/GUEK)、客户端 SystemTitle、解析使能 —— **记住上次**。
+  - 解码为**容错式**：`init(from:)` 逐项「缺键/类型不符 → 回退默认值」，字段增删不会让旧 `config.json` 整体失效。**改字段必须同步该 init**。
 - **`AddressPreset`**：`管理=1 / 公共=0x10 / 只读=2 / 预链接=0x66 / 自定义`（HDLC 客户端下拉；数值可改）。
 - **`ObisLibrary`**：全局 OBIS 清单（下拉选、手输、导入、预置）。
 - **`recentObis`**：最近读过的 OBIS，填充下拉；**不存数据值**。
@@ -135,12 +145,15 @@
 ## 7. 安全（P2 重点，吸收 R1/R3）
 
 - 信息加密四档映射为 **`DLMS_SECURITY`**（喂给 `settings->cipher.security`）：
-  - `DLMS_SECURITY_NONE=0` / `DLMS_SECURITY_AUTHENTICATION=0x10`(仅认证) / **`DLMS_SECURITY_ENCRYPTION=0x20`**(仅加密,注意名是 ENCRYPTION 非 ENCRYPTED) / `DLMS_SECURITY_AUTHENTICATION_ENCRYPTION=0x30`(认证加密,用 aKEK)。`enums.h:736-751` 已核实。
+  - `DLMS_SECURITY_NONE=0` / `DLMS_SECURITY_AUTHENTICATION=0x10`(仅认证) / **`DLMS_SECURITY_ENCRYPTION=0x20`**(仅加密,注意名是 ENCRYPTION 非 ENCRYPTED) / `DLMS_SECURITY_AUTHENTICATION_ENCRYPTION=0x30`(认证加密,用 GUEK)。`enums.h:736-751` 已核实。
   - **不要**喂 `DLMS_SECURITY_POLICY`（那是 Security Setup 对象位域 v0:1/2/3、v1:0x04..0x80）。
-- 密钥约定映射（**已修正方向，P2 对真表锁定 R1**）：
-  - EM/aKEK ↔ `settings->cipher.blockCipherKey`
-  - AK ↔ `settings->cipher.authenticationKey`
-  - EK：先按 `blockCipherKey`；GMAC 预留 `settings->cipher.dedicatedKey`
+- 密钥约定映射（**已修正方向，P2 对真表锁定 R1**；v1.3 起按 GUAK/GUEK 口径命名）：
+  - **GUAK**（全局单播认证密钥，16B）↔ `settings->cipher.authenticationKey` —— HLS-GMAC 的认证密钥
+  - **GUEK**（全局单播加密密钥，16B）↔ `settings->cipher.blockCipherKey` —— 信息加密用
+  - **MK / GBEK**：暂不提供（底层 `settings->cipher.dedicatedKey` 槽位预留，`dlms_set_security` 第 5 参传 NULL）
+  - 落在桥接 `dlms_set_security(ctx, security, guekHex, guakHex, NULL)`（参数名沿历史命名，含义以头文件注释为准）
+  - 三者默认值：GUAK/GUEK = 16 字节全 0，客户端 SystemTitle = `4142433031323334`；**留空 = 用默认值**
+  - hex 输入归一化：去空白与 `:` `-` 后转大写；非法字符不静默丢弃，由 UI 的字节数校验提示（`HexUtil.normalize/isValid`）
 - SystemTitle（**方向已修正，只管客户端；服务器自动**）：
   - **客户端自己的 SystemTitle** → `settings->cipher.systemTitle`（`client.c:443` 用它当 GMAC 密钥），**必须在 `cl_aarqRequest` 之前设置**，否则 AARQ 无 A6 字段、HLS 必然失败（R13）。
   - **服务器 SystemTitle** → `settings->sourceSystemTitle`（顶层 `unsigned char[8]`，**由 AARE 的 AP-title 自动回填**，`apdu.c:1737`），一般无需手填；仅 pre-established 才需手填。**不作为 UI 输入，捕获后显示在数据/日志区。**
@@ -188,7 +201,7 @@
 
 | 编号 | 风险 | 处置 |
 |---|---|---|
-| R1 | EM/AK/EK ↔ Gurux `blockCipherKey/authenticationKey/dedicatedKey` 映射 | P2 对真表专项验证后锁定 |
+| R1 | GUAK/GUEK ↔ Gurux `authenticationKey/blockCipherKey` 映射（原 EM/AK/EK 口径） | P2 对真表专项验证后锁定 |
 | R2 | 写=BER 字节直传；执行=需解析成 variant | 写 hex→variant 解析器（P1 基础/P3 完善） |
 | R3 | SystemTitle：客户端 App 设置(sourceSystemTitle) vs 服务器 AARE 返回(cipher.systemTitle) | 服务器自动捕获显示，不作为输入；客户端可留空 |
 | R4 | 报文 `>>>` 语义注解需 C 侧解析 APDU | P1 简化注解，P3 完善 |
@@ -200,12 +213,13 @@
 | R10 | 接收帧跨 TCP 分段被覆盖（当前 `bb_set`） | P0：改跨 recv 持久化累积缓冲 + `bb_insert` 追加 |
 | R11 | 接收缓冲 512B 过小 | P0：按 `maxPduSize+50` 动态分配 |
 | R12 | HLS 缺 challenge 回合 | P1：`isAuthenticationRequired` → `cl_getApplicationAssociationRequest` |
-| R13 | 客户端 SystemTitle 未设 → AARQ 无 A6、HLS 失败 | P1：UI 常显 + 8 字节校验 + 选 HLS 标必填 |
+| R13 | 客户端 SystemTitle 未设 → AARQ 无 A6、HLS 失败 | P1：UI 常显 + 8 字节校验 + 选 HLS 标必填；v1.3：默认 `4142433031323334`，留空不再落成空值 |
 | R14 | P1 无 IC 同步，IC=1 可能被真表拒 | P1 文档化；P2 加 IC 同步 + 持久化 |
 | R15 | `cip_init` IC=0 vs `cip_clear` IC=1 不一致 | P2：显式赋值，不依赖库初值 |
 | R16 | `cl_getServerAddress` 返回 uint16，logical≥4 溢出 | P3：UI 合成器校验 |
 | R17 | `cl_methodLN` vendor bug（ARRAY/STRUCTURE 分支恒假） | P3：先确认版本 |
 | R18 | Wrapper 模式误发 SNRM | P0：按 interfaceType 分支 |
+| R19 | 密钥字段改名（aKEK/AK/EK → GUAK/GUEK）使旧 `config.json` 键失效 | v1.3：`ConnectionConfig.init(from:)` 容错解码，缺键回退默认 → 旧 IP/端口/认证等全部保留；仅密钥本身回落到默认全 0，需按现场重填 |
 
 ---
 

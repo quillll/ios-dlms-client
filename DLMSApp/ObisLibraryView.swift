@@ -98,19 +98,23 @@ struct ObisEditorSheet: View {
     @State private var code = "1.0.1.8.0.255"
     @State private var name = ""
     @State private var unit = ""
-    @State private var objectClass: ObisClass = .register
+    @State private var scaling = ""
+    @State private var icText = "3"
     @State private var attr = "2"
     @State private var showError = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("OBIS") {
-                    TextField("如 1.0.1.8.0.255", text: $code)
+                Section("基本信息") {
                     TextField("名称", text: $name)
-                    TextField("单位", text: $unit)
-                    Picker("对象类型", selection: $objectClass) { ForEach(ObisClass.allCases) { Text($0.title).tag($0) } }
+                    TextField("接口类(IC，10/16进制，如 3 / Data=1 / 0x1F)", text: $icText)
+                        .keyboardType(.numbersAndPunctuation)
+                    TextField("逻辑名 OBIS（如 1.0.1.8.0.255）", text: $code)
+                        .font(.system(.body, design: .monospaced))
                     TextField("属性/方法", text: $attr).keyboardType(.numberPad)
+                    TextField("单位（可选）", text: $unit)
+                    TextField("量纲/倍率（可选）", text: $scaling)
                 }
             }
             .navigationTitle(item == nil ? "添加 OBIS" : "编辑 OBIS")
@@ -128,7 +132,7 @@ struct ObisEditorSheet: View {
     private func load() {
         guard let item else { return }
         code = item.code; name = item.name; unit = item.unit
-        objectClass = item.objectClass; attr = "\(item.attribute)"
+        icText = "\(item.objectClass)"; attr = "\(item.attribute)"; scaling = item.scaling
     }
 
     private func save() {
@@ -137,7 +141,8 @@ struct ObisEditorSheet: View {
         it.code = code
         it.name = name.isEmpty ? code : name
         it.unit = unit
-        it.objectClass = objectClass
+        it.scaling = scaling
+        if let ic = NumberInput.parse(icText) { it.objectClass = ic }
         it.attribute = Int(attr) ?? 2
         store.upsert(obis: it)
         dismiss()

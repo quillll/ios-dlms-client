@@ -36,7 +36,7 @@ private let dlmsTransportTrace: dlmsTraceFn = { user, dir, frame, len in
     guard let user, let frame, len > 0 else { return }
     let r: GXDLMSReader = Unmanaged.fromOpaque(user).takeUnretainedValue()
     let bytes = Array(UnsafeBufferPointer(start: frame, count: Int(len)))
-    r.emitTrace(direction: dir == 2 ? .rx : .tx, hex: HexUtil.format(bytes))
+    r.emitTrace(direction: dir == 2 ? .rx : .tx, frame: bytes)
 }
 
 // MARK: - 抄读器
@@ -57,8 +57,27 @@ final class GXDLMSReader {
         self.onState = onState
     }
 
-    func emitTrace(direction: LogEntry.Kind, hex: String) {
-        onTrace?(LogEntry(time: Date(), kind: direction, text: direction == .tx ? "TX" : "RX", hex: hex))
+    func emitTrace(direction: LogEntry.Kind, frame: [UInt8]) {
+        let type = Self.classify(frame)
+        onTrace?(LogEntry(
+            time: Date(), kind: direction,
+            text: direction == .tx ? "TX" : "RX",
+            hex: type.isEmpty ? HexUtil.format(frame) : "\(type)  \(HexUtil.format(frame))"))
+    }
+
+    /// 从帧头区(地址/控制之后)找 COSEM/HDLC 顶层 tag，识别报文类型。
+    /// 纯启发式：只看前 16 字节里首个命中的 tag，供日志快速标注，非精确解码。
+    static func classify(_ f: [UInt8]) -> String {
+        let tags: [(UInt8, String)] = [
+            (0x60, "AARQ"), (0x61, "AARE"), (0x62, "RLRQ"), (0x63, "RLRE"),
+            (0xC0, "Get-Request"), (0xC4, "Get-Response"),
+            (0xC1, "Set-Request"), (0xC5, "Set-Response"),
+            (0x35, "SNRM"), (0x73, "UA"), (0x40, "DISC"),
+        ]
+        for b in f.prefix(16) {
+            if let m = tags.first(where: { $0.0 == b }) { return m.1 }
+        }
+        return ""
     }
     private func state(_ s: String) { onState?(s) }
 
@@ -100,10 +119,13 @@ final class GXDLMSReader {
         }
 
         // 安全 / 客户端 SystemTitle / IC（可扩展 P2）。
-        dlms_set_security(ctx, Int32(config.security.rawValue), cStr(config.akekHex), nil, nil)
-        if !config.clientSystemTitleHex.isEmpty {
-            dlms_set_clientSystemTitle(ctx, cStr(config.clientSystemTitleHex))
-        }
+        // 密钥映射：GUEK(全局单播加密密钥) → blockCipherKey(第 3 参)；
+        //           GUAK(全局单播认证密钥) → authenticationKey(第 4 参)。
+        // 留空时 ConnectionConfig 已回退到默认值（全 0 AES-128 / 默认 SystemTitle），
+        // 所以这两个 effective 串不会为空，不需要再加空值判断。
+        dlms_set_security(ctx, Int32(config.security.rawValue),
+                          cStr(config.guekEffective), cStr(config.guakEffective), nil)
+        dlms_set_clientSystemTitle(ctx, cStr(config.clientSystemTitleEffective))
 
         let tUser = Unmanaged<GXDLMSTransport>.passUnretained(transport).toOpaque()
         dlms_set_io(ctx, tUser, dlmsTransportSend, dlmsTransportRecv)

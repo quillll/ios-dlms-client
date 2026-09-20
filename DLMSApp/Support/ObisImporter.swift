@@ -70,7 +70,7 @@ enum ObisImporter {
     private static func makeItem(code: String, name: String, unit: String) -> ObisItem? {
         guard isValid(code: code) else { return nil }
         return ObisItem(code: normalize(code), name: name.isEmpty ? code : name,
-                        unit: unit, objectClass: .register, attribute: 2, enabled: true)
+                        unit: unit, objectClass: 3, attribute: 2, enabled: true)
     }
 
     /// 校验 6 段 OBIS："1.0.1.8.0.255" 或 IEC "1-0:1.8.0*255"。
@@ -103,7 +103,7 @@ private struct ImportEntry: Decodable {
             code: ObisImporter.normalize(code),
             name: name ?? ObisImporter.normalize(code),
             unit: unit ?? "",
-            objectClass: ObisClass(rawValue: objectClass ?? 3) ?? .register,
+            objectClass: objectClass ?? 3,
             attribute: attribute ?? 2,
             enabled: true)
     }

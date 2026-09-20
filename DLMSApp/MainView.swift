@@ -16,7 +16,7 @@ struct MainView: View {
     @EnvironmentObject var store: Store
     @StateObject private var session = SessionModel()
 
-    @State private var currentClass: ObisClass = .register
+    @State private var currentClassText = "3"
     @State private var currentObis = "1.0.1.8.0.255"
     @State private var currentAttr = "2"
     @State private var requestHex = ""
@@ -72,12 +72,11 @@ struct MainView: View {
     private var objectEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Picker("类", selection: $currentClass) {
-                    ForEach(ObisClass.allCases) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading)
+                TextField("类 (10/16进制, 如 3 / 0x1F)", text: $currentClassText)
+                    .keyboardType(.numbersAndPunctuation)
+                    .textFieldStyle(.roundedBorder)
                 TextField("属性", text: $currentAttr)
-                    .keyboardType(.numberPad).frame(width: 48).textFieldStyle(.roundedBorder)
+                    .keyboardType(.numberPad).frame(width: 52).textFieldStyle(.roundedBorder)
             }
             HStack {
                 TextField("OBIS（支持 , . - : 与16进制段）", text: $currentObis)
@@ -158,8 +157,12 @@ struct MainView: View {
             }
             ForEach(Array(store.logs.suffix(200))) { e in
                 HStack(alignment: .top, spacing: 6) {
-                    Text(e.time.dlmsLogText).font(.caption2).foregroundStyle(.tertiary)
+                    Text(e.time.dlmsLogText).font(.caption2)
+                        .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
                     Text(e.text).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(color(for: e.kind)).frame(width: 28, alignment: .leading)
+                    Text(e.hex ?? "")
+                        .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(color(for: e.kind))
                 }
             }
@@ -194,7 +197,7 @@ struct MainView: View {
         let reader = GXDLMSReader(
             config: cfg,
             onTrace: { e in DispatchQueue.main.async {
-                store.log(e.kind, (e.hex.map { "\(e.text)  \($0)" } ?? e.text))
+                store.log(e.kind, e.text, hex: e.hex)
             } },
             onState: { s in DispatchQueue.main.async {
                 session.state = s
@@ -205,7 +208,7 @@ struct MainView: View {
         )
         reader.run(op: op,
                    obis: op == nil ? nil : ObisUtil.parse(currentObis),
-                   classVal: currentClass.rawValue,
+                   classVal: UInt16(NumberInput.parse(currentClassText) ?? 3),
                    attr: Int(currentAttr) ?? 2,
                    hex: requestHex) {
             session.isBusy = false
