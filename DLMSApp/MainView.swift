@@ -273,16 +273,25 @@ struct MainView: View {
     /// 现在 HEX 独占整宽（约能放 40 字符 ≈ 13 字节/行），可读性高得多。
     private func logRow(_ e: LogEntry) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Text(e.time.dlmsLogText).font(.caption2)
                     .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
-                Text(e.text).font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
-                Text(e.label).font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
-                Spacer(minLength: 0)
+                if let hex = e.hex, !hex.isEmpty {
+                    // 报文行：TX/RX 与报文类型各占固定列，HEX 放下一行独占整宽。
+                    Text(e.text).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
+                    Text(e.label).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+                    Spacer(minLength: 0)
+                } else {
+                    // 信息行：`text` 本身就是整句消息（如"建链失败: Data receive failed."），
+                    // 必须给它整行宽度。
+                    // 之前一律套用 26pt 的 TX/RX 列宽 → 长消息被逐字折成一列竖条，完全没法读。
+                    Text(e.text).font(.caption2)
+                        .foregroundStyle(color(for: e.kind))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            // 纯信息行（无 HEX）只显示首行，不留空行。
             if let hex = e.hex, !hex.isEmpty {
                 Text(hex)
                     .font(.system(.caption2, design: .monospaced))
