@@ -108,11 +108,12 @@ struct ObisEditorSheet: View {
             Form {
                 Section("基本信息") {
                     TextField("名称", text: $name)
-                    TextField("接口类(IC，10/16进制，如 3 / Data=1 / 0x1F)", text: $icText)
-                        .keyboardType(.numbersAndPunctuation)
+                    // 键盘统一用系统默认：接口类与属性都可能填 16 进制，
+                    // 限定纯数字键盘反而让用户打不出来。
+                    TextField("接口类(IC，10/16进制，如 3 / 0x1F)", text: $icText)
                     TextField("逻辑名 OBIS（如 1.0.1.8.0.255）", text: $code)
                         .font(.system(.body, design: .monospaced))
-                    TextField("属性/方法", text: $attr).keyboardType(.numberPad)
+                    TextField("属性/方法", text: $attr)
                     TextField("单位（可选）", text: $unit)
                     TextField("量纲/倍率（可选）", text: $scaling)
                 }
@@ -143,7 +144,9 @@ struct ObisEditorSheet: View {
         it.unit = unit
         it.scaling = scaling
         if let ic = NumberInput.parse(icText) { it.objectClass = ic }
-        it.attribute = Int(attr) ?? 2
+        // 属性用同一套 10/16 进制识别，与「类」保持一致。
+        // （键盘限制取消后用户可能填 0x10，若还用 Int() 会解析失败并静默回落到 2。）
+        it.attribute = NumberInput.parse(attr) ?? 2
         store.upsert(obis: it)
         dismiss()
     }

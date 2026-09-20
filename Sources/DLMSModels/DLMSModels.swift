@@ -124,6 +124,10 @@ struct LogEntry: Identifiable, Equatable {
     var level: Level = .debug
     var kind: Kind = .info
     var text: String
+    /// 报文类型（启发式识别：AARQ / Get-Request / SNRM …）；仅 TX/RX 行有值。
+    /// 单独成字段而不是拼进 hex 串，这样 UI 能给它一个固定宽度列，
+    /// 报文 HEX 才能上下对齐（拼字符串时类型名长度不同会错位）。
+    var label: String = ""
     var hex: String?                 // TX/RX 原始 HEX（可选，供展开）
 }
 

@@ -1,6 +1,14 @@
-# DLMS 抄表调试台 iOS —— 详细方案（v1.3）
+# DLMS 抄表调试台 iOS —— 详细方案（v1.4）
 
-> 状态：已就源码逐条核实；v1.3 为「密钥可配置化」增量（设置页 + 数据模型 + 建链映射），仍按 P0→P1 推进
+> 状态：**App 已在真机侧载运行**（CI 三道闸门全绿 → 出未签名 IPA → Windows 用 Sideloadly + 免费 Apple ID 装机成功）。
+> v1.4 变更（UI 交互细化 + 本轮审核发现）：
+> ⑨ §3.1 **类改为输入框**（不用下拉：COSEM 类实际可能非常多，下拉无法穷举），支持 10/16 进制自动识别；`ObisItem.objectClass` 由受限枚举改为**任意 Int**；
+> ⑩ 新增 **§3.2 地址输入规则**：HDLC 客户端「非自定义只读、仅自定义可输入、1 字节 = 2 位 hex、可省前导 0」；通信地址「4/2/1 字节、默认 4 字节 `00013FFF`、**不省前导 0**」；
+> ⑪ 新增 **§3.3 OBIS 添加字段顺序**：名称 → 接口类 → 逻辑名 → 属性 → 单位（可选）→ 量纲（可选）；
+> ⑫ §8 报文日志改为 **4 列固定宽度**（时间 | TX·RX | 报文类型 | HEX）。类型与 HEX **必须分列**——早前把类型拼进 HEX 串中间加两个空格，类型名长度不一（`AARQ` 4 字符 vs `Get-Response` 12 字符）会把 HEX 挤错位，这正是"TX 后两个空格导致上下不对齐"的根因；
+> ⑬ **修正报文类型表**：HDLC 控制字段以 `enums.h` 为准 —— `SNRM=0x93`、`DISC=0x53`（原误写 `0x35`/`0x40`，导致这两个报文**永远不会被标注**，且可能撞地址字段产生误标）；
+> ⑭ 整数越界由 **trap 崩溃** 改为 `clamping` 夹取（`UInt16(clamping:)`/`UInt8(clamping:)`）：类填 `99999`、属性填 `300`、端口填 `99999` 不再闪退；
+> ⑮ 风险登记新增 **R20–R24**；
 > v1.3 变更（密钥可配置化，用户口径）：
 > ⑧ 设置页密钥区改为 **GUAK / GUEK 两条独立输入**（取代原「aKEK/EM 主密钥」单条）；
 >    **GUAK → `settings->cipher.authenticationKey`**，**GUEK → `settings->cipher.blockCipherKey`**；
@@ -80,9 +88,42 @@
 ```
 
 ### 3.1 操作对象输入规则
-- 类 / OBIS / 属性/方法：支持 **10/16 进制切换**输入，并**自动识别**（含 `a-f` → 视为 16 进制、无前缀 hex）。
-- OBIS 分隔符兼容 `, . - :`；可下拉全局清单或手输。
+- **类：只提供输入框，不做下拉**。COSEM 类实际可能非常多（不止 Data/Register/Extended/ProfileGeneric 这几个），下拉既穷举不了也不可维护。支持 **10/16 进制自动识别**（`3` / `0x1F` / 含 `a-f` 视为 16 进制）。
+  - 模型层 `ObisItem.objectClass` 为**任意 `Int`**（原来是从 4 个值的枚举），解析失败时保留原值而不是清零。
+- OBIS：分隔符兼容 `, . - :` `*` 与空白；可下拉全局清单或手输。
+- 属性/方法：与「类」一样支持 **10/16 进制自动识别**（`2` / `0x03`）。
+- **选中一条 OBIS 时，「接口类」与「属性」必须一起更新** —— 类 / 逻辑名 / 属性是**一组**，只换逻辑名会拿错类去读，读出来就是别的对象。
+  - `recentObis` 只存 code 字符串 → 按 code 回 OBIS 清单反查元数据；清单里**查不到**（手输未入库）时只更新逻辑名，不动类/属性，免得抹掉用户刚手填的值。
+  - 首次进入主屏时按同一规则恢复「最近一条」，且**只做一次**（标志位），避免每次回到本页把手改的值覆盖掉。
+- **键盘统一用系统默认键盘**：类 / 属性 / 逻辑名都**不再**限定 `numberPad` / `numbersAndPunctuation`（类与属性都可能填 16 进制，纯数字键盘反而是限制）。
+  - 保留数值键盘的只有 ParamsView 里天然数值的字段：IP、端口、接收超时；地址类字段用 `asciiCapable`（要打 hex 字母）。
 - 请求数据 = **ASN.1/BER 编码**的 HEX 字节（空格可有可无）。例：`11 01`=unsigned 数据 1；`12 01 00`=long unsigned 数据 256。
+
+### 3.2 地址输入规则（HDLC）
+
+| 字段 | 规则 |
+|---|---|
+| **客户端地址** | 预设下拉（管理 `0x01` / 公共 `0x10` / 只读 `0x02` / 预链接 `0x66` / 自定义）。**选中预设时该值只读显示、不可输入**；只有选「自定义」才出现可编辑输入框。客户端地址是 **1 字节** → **2 位 hex**（不是 4 位），**可省略前导 0**（填 `1` → `01`）。 |
+| **通信地址(服务器)** | 允许 **1 / 2 / 4 字节**；默认 **4 字节 `00013FFF`**。**不允许省略前导 0**：固定 `%08X` 显示（填 `1` → 显示 `00000001`），免得"宽度"信息被视觉抹掉。 |
+| Wrapper 源 / 目标 | 各 4 位 hex，默认 `0001` / `0001`。 |
+
+> ⚠️ **1/2 字节的区分由数值大小决定**：Gurux 按 `serverAddress` 的量级自动推断帧内地址字节数，`dlmssettings.h` 里**没有** `addressSize` 字段（已核实）。
+> 所以**数值相同的 1 字节与 2 字节写法无法区分**（`01` 与 `0001` 都等于 `0x01`）。若某台表要求 2 字节地址字段而值恰为 `0x0001`，当前模型表达不了 —— 见 R16。
+
+### 3.3 添加 / 编辑 OBIS 的字段顺序
+
+表单自上而下**固定**为：
+
+1. **名称**
+2. **接口类**（IC，输入框，10/16 进制自动识别）
+3. **逻辑名 OBIS**
+4. **属性 / 方法**
+5. 单位（可选）
+6. 量纲 / 倍率（可选）
+
+> 顺序即录入习惯：先认"这是什么" → 再定位"到哪里取" → 最后补"怎么换算"。
+> 量纲单独成字段（`ObisItem.scaling`），便于后续把 `value × 10^scaler` 的换算做进展示层。
+> ⚠️ 接口类输入框的占位文字写的是 `Data=1`，但该串含 `=` **无法被解析**（保存时会静默保留原值）—— 见 R24。
 
 ---
 
@@ -163,8 +204,27 @@
 
 ## 8. 报文日志 & 数据解析
 
-- **报文日志**：桥接 C 增 **trace 回调**，发/收每帧回调 `(方向, 原始HEX, 语义注释)`；Swift 渲染时间戳 + Send/Receive + `Original:` 注解 + 完整 HEX + 四色(TX红/RX蓝/信息绿/服务橙) + 级别过滤。
-  - **trace 实现（R4/R9）**：P1 在 bridge 的 send/recv 处抓全部原始帧（TCP 上报文必经），语义注解 `>>>` 逐版加深；若需 patch vendor 源码则用脚本管理并纳入 CI，接受升级重打补丁成本。
+- **trace 通路**：桥接 C 增 **trace 回调**，发/收每帧回调 `(方向, 完整原始帧字节)`。
+  - P1 在 bridge 的 send/recv 处抓全部原始帧（TCP 上报文必经）。
+  - **零 patch 拿明文 PDU**（R9）：提供 `cip_tracePdu`（`ciphering.h:192`，需开 `gxignore.h:186` 的 `DLMS_TRACE_PDU` 一行）即可拿到**加解密后的明文**，优于 patch vendor。
+
+- **显示规则（v1.4）**：每行 **4 列固定宽度** ——
+
+  ```
+  时间戳(74pt) │ TX·RX(26pt) │ 报文类型(92pt) │ 完整 HEX（自适应换行）
+  00:01:23.456     TX            AARQ            7E A0 77 00 02 ...
+  00:01:23.789     RX            AARE            7E A0 7A 61 00 ...
+  00:01:24.001     TX            Get-Request     7E A0 1E 00 02 ...
+  ```
+
+  - **报文类型必须与 HEX 分列**，不能拼进同一个字符串。早前实现是 `"\(type)  \(hex)"`（两个空格拼接），而类型名长度不一（`AARQ`=4 字符 / `Get-Response`=12 字符）→ **HEX 起始位置每行都不同**。这正是用户报的"TX 后面两个空格导致上下不对齐"。
+    → `LogEntry` 因此**单独增加 `label` 字段**承载类型，`text` 只放 `TX`/`RX`。
+  - **报文类型清单**（HDLC 控制字段取值以 `enums.h` 为准，**勿凭记忆**）：
+    - HDLC 链路层：`SNRM=0x93`(enums.h:1203) / `UA=0x73`(:1208) / `DISC=0x53`(:1223) / `DM=0x1F`(:1193)
+    - APDU：`AARQ=0x60` / `AARE=0x61` / `RLRQ=0x62` / `RLRE=0x63` / `Get-Req=0xC0` / `Get-Resp=0xC4` / `Set-Req=0xC1` / `Set-Resp=0xC5` / `Action-Req=0xC3` / `Action-Resp=0xC7`
+    - ⚠️ 早前误写 `SNRM=0x35` / `DISC=0x40` → 这两个报文**永远标注不出来**，且 `0x35`/`0x40` 会撞上 HDLC 地址/长度字段造成**误标**。
+  - 颜色：**TX 绿 / RX 蓝 / 信息 灰**（以当前实现为准；早期文档写的"TX 红"与之不符 —— 若要改回红色需同时改代码与本节）。
+  - 报文的 `>>>` 语义注解（R4）仍留 P3 加深。
 - **数据解析**：解析使能开时，把 `var_toString` 结果 + ASN.1 `Tag/长度/值` 拆解显示；窗口带「清空」。
 
 ---
@@ -181,13 +241,42 @@
 
 ---
 
-## 10. 构建 / CI
+## 10. 构建 / CI（**已跑通**）
 
-- XcodeGen `project.yml` + GitHub Actions：
-  - `simulator` 目标：验证可编译，产出 `.app`
-  - `device` 目标：出未签名 `.ipa`（改装机再本地签名）
-- **首个闸门 = simulator 编译通过**（预期 1~2 次 C/modulemap 修正属正常）。
-- **第二闸门 = hex→variant 解析器单元测试**（纯函数，不依赖真表，成本低收益直接）。
+> 现状：**全部达成** —— CI 三道闸门全绿 → 出未签名 IPA → Windows 真机侧载成功。以下为契约与经验记录。
+
+- XcodeGen `project.yml` + GitHub Actions，三道闸门：
+
+  | 闸门 | 位置 | 内容 |
+  |---|---|---|
+  | 2 | `ubuntu-latest`（1x 计费，**先跑**） | `Tests/CTests/run.sh`：C 桥接 + vendor 客户端子集纯单测 |
+  | 1 | `macos-15`（10x 计费） | 模拟器全量编译（不签名） |
+  | 3 | `macos-15` | Swift 托管单测（`@testable import DLMSApp`，需先装宿主 App） |
+
+  - 闸门 2 是闸门 1/3 的 `needs` 前置：C 层挂了就不启动 macOS，省额度。
+- **出包**：`build-ipa.yml`，**打 tag（`v*`）自动触发**或手动 Run workflow → 真机 Release 编译 → 打未签名 IPA（标准 `Payload/` 结构）→ 产物 `dlms-unsigned-ipa`。
+- **装机**：Windows + Sideloadly + 免费 Apple ID。必装 **iTunes 官网版**（提供 Apple Mobile Device Support 驱动，Store 版不行）；iOS 16+ 需先开「开发者模式」；证书 **7 天**，续期只需重签、不用重编、数据保留。
+- ⚠️ 仓库是 **public** → macOS runner 免费不限时；若是 private，Free 计划 2000 分钟 ÷ 10 倍率 ≈ 每月仅 200 macOS 分钟。
+
+### 10.1 CI 踩过的坑（均已修，勿重犯）
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| `'DLMSCore.h' file not found` | `HEADER_SEARCH_PATHS` 缺 `Sources/DLMSCore/Headers` | 补上（framework 自身编得过 ≠ App 侧能找到） |
+| `Undefined symbols: _SERIALIZER_LOAD/_SAVE/_SIZE` | Apple 不在「Windows/Linux 用 FILE 流」分支，`gxserializer.c` 会调应用须实现的钩子 | 定义 `-DDLMS_IGNORE_SERIALIZER`（该 `.c` 整个文件被此宏包住，故够用） |
+| `attribute can only be applied to types, not declarations` | `@convention(c)` **不能作用于函数声明** | 改成「非捕获闭包赋给 C 函数指针类型常量」：`let f: dlmsSendFn = { … }` |
+| `umbrella header 'DLMSCore.h' not found` | 桥接头没进 Headers 构建阶段 → 没被复制进 `DLMSCore.framework/Headers/` | project.yml 的 `headers:` **顶层键不生效**，必须写成 `sources` 条目 + `buildPhase: headers` + `headerVisibility: public` |
+| `Section(_:content:footer:)` 编译失败 | SwiftUI **没有**这个重载 | 带标题+footer 必须写 `Section { } header: { } footer: { }` |
+| 模拟器装不上：`Failed to load Info.plist` | **framework target 没有 Info.plist**（既无 `INFOPLIST_FILE` 也无 `GENERATE_INFOPLIST_FILE` 时 Xcode 不生成）；且报错路径会被**截断**，容易误判成 App 的 plist | `DLMSCore` 加 `GENERATE_INFOPLIST_FILE: YES`；App / 测试 bundle 用显式 plist |
+| `cannot convert value of type 'UInt16' to expected argument type 'Int'` | 调用方多包了一层 `UInt16(...)` | `classVal` 本就是 `Int`，直接传；`UInt16` 转换只在 C 边界做**一次** |
+| tag 出包时 C 单测被**静默跳过** | `workflow_dispatch` 的 `inputs.*` 在 `push` 事件下不可用 → 求值为假 | `if: ${{ github.event_name == 'push' \|\| inputs.run_ctest }}`。**任何 inputs 条件扩展成也能自动触发时都要复查** |
+
+### 10.2 远端排查 CI 失败（零凭据）
+
+公开仓库下：**运行 / 作业 / 步骤状态** 与 **check-run annotations** 可匿名读；**job 日志与 artifact 需鉴权**（实测 401 / 0 字节）。
+因此 `ci.yml` 失败时把关键报错行打成 `::error::` **注解** —— 就能匿名取到**完整**报错（比 GitHub 自动生成的 `exit code 65` 有用得多，也是靠它才发现"缺 plist 的是 framework 而非 App"）。
+
+> ⛔ **不要**用 `git credential fill` 去取 token 拉日志：本机凭据未缓存时**每次都会弹浏览器登录**。
 
 ---
 
@@ -220,18 +309,40 @@
 | R17 | `cl_methodLN` vendor bug（ARRAY/STRUCTURE 分支恒假） | P3：先确认版本 |
 | R18 | Wrapper 模式误发 SNRM | P0：按 interfaceType 分支 |
 | R19 | 密钥字段改名（aKEK/AK/EK → GUAK/GUEK）使旧 `config.json` 键失效 | v1.3：`ConnectionConfig.init(from:)` 容错解码，缺键回退默认 → 旧 IP/端口/认证等全部保留；仅密钥本身回落到默认全 0，需按现场重填 |
+| R20 | 报文类型标注是**启发式**（扫前 16 字节里首个命中的 tag），可能误标 | v1.4 已修正表值（`SNRM=0x93`/`DISC=0x53`，原 `0x35`/`0x40` 永不命中且会撞地址字段）。精确做法：让 bridge 回传 C 层已解析的 `gxReplyData.command` → §13.2 |
+| R21 | `dlms_set_security` 参数名仍叫 `akekHex`/`authKeyHex`，而 aKEK 口径已废 | 纯改名不影响行为（C 参数名不影响 ABI，也不影响 Swift 调用）。建议改为 `guekHex`/`guakHex`；当前靠 `DLMSCore.h` 注释兜底 |
+| R22 | **密钥长度未校验**：`hexToBytes` 走 `bb_addHexString`，任意长度都接受 | AES-128 需 **16 字节**。UI 已有字节数提示（`HexUtil.isValid`），但 bridge 未拦截 → 建议 bridge 校验长度并返回错误码，别让错长度密钥进到 cipher |
+| R23 | 整数越界曾直接 **trap 崩溃**（`UInt16(x)`/`UInt8(x)` 是非夹取转换） | v1.4 已修：C 边界统一 `UInt16(clamping:)` / `UInt8(clamping:)`（类填 99999、属性填 300、端口填 99999 不再闪退） |
+| R24 | OBIS 编辑器接口类占位符写 `Data=1`，该串含 `=` **无法解析** → 保存时静默保留旧值 | v1.4 已改为可解析的示例（`3 / 0x1F`） |
+| R25 | 地址"1 字节 / 2 字节"**无法用数值区分**（`01` 与 `0001` 都是 `0x01`） | Gurux 按 `serverAddress` 量级推断字节数、无 `addressSize`。若真表要求 2 字节字段而值恰为 `0x0001`，需 P3 引入显式地址宽度（与 R16 同源） |
 
 ---
 
-## 13. 待核符号（实现时在源码逐一确认）
+## 13. 符号核实台账
 
-- `cl_writeLN` / `cl_methodLN` 精确签名（client.h 已见声明，需读实现确认参数语义）
-- **`DLMS_SECURITY` 取值**（enums.h 已核实：0 / 0x10 / 0x20 / 0x30；**非** `DLMS_SECURITY_POLICY`）
-- association/HLS 建链函数（`cl_snrmRequest`/`cl_aarqRequest`/`cl_parseUAResponse`/`cl_parseAAREResponse` + HLS challenge：读 0.0.40.0.0.255 ⇒ GMAC ⇒ ACTION）
-- `cl_methodLN` 的 variant 入参如何构造（hex→variant 解析，P1 仅整型+无参）
-- HDLC 地址字节数自动推断逻辑（dlms.c 帧构造）
-- `DLMS_DATA_TYPE` 枚举值（hex tag ↔ 类型映射表，供 hex→variant）
+### 13.1 已核实（逐条读 vendored 源码确认，可当契约用）
+
+| 符号 / 事实 | 结论 | 出处 |
+|---|---|---|
+| `DLMS_SECURITY` | `NONE=0` / `AUTHENTICATION=0x10` / **`ENCRYPTION=0x20`**（不是 ENCRYPTED）/ `AUTHENTICATION_ENCRYPTION=0x30`；**不是** `DLMS_SECURITY_POLICY`（那是 Security Setup 对象位域） | `enums.h:736-751` |
+| `DLMS_DATA_TYPE` tag 表 | `INT8=0x0F` / `INT16=0x10` / `UINT8=0x11` / `UINT16=0x12` / `INT32=0x05` / `UINT32=0x06` / `BOOL=0x03` / `OCTET_STRING=0x09` / `ENUM=0x16`；`0x80` = `BYREF` 掩码（tag 7/8/11/14 未使用） | `enums.h:525-558` |
+| `cl_writeLN` / `cl_methodLN` | 第 5 参是 **`dlmsVARIANT*`**（**非** `gxByteBuffer*`）；`cl_writeLN` 另有第 6 参 `byteArray` 决定语义 | `client.h:226-233` / `client.h:350-356` |
+| HLS challenge 流程 | **不是**手读 `0.0.40.0.0.255` 再自己算 GMAC。`cl_parseAAREResponse` 只置 `settings->isAuthenticationRequired`，应用层须再走 `cl_getApplicationAssociationRequest` → 收帧 → `cl_parseApplicationAssociationResponse`（Gurux 内部才去调 `0.0.40.0.0.255` method 1） | `client.c:380-409`、`client.c:502`、`REF:communication.c:1099` |
+| SystemTitle 方向 | **客户端自己的** → `cipher.systemTitle`（`client.c:443` 拿它当 GMAC 密钥，须在 AARQ 前设）；**服务器的** → 顶层 `unsigned char sourceSystemTitle[8]`（AARE 自动回填，`apdu.c:1717`） | `dlmssettings.h:117`、`ciphering.h:83` |
+| 密钥落点 | GUEK → `cipher.blockCipherKey`；GUAK → `cipher.authenticationKey`；`dedicatedKey` 为预留槽位 | `DLMSCore.h:48-50` + `DLMSBridge.c:216-260` |
+| HDLC 控制字段 | `SNRM=0x93` / `UA=0x73` / `DISC=0x53` / `DM=0x1F` | `enums.h:1203/1208/1223/1193` |
+| HDLC 地址字节数 | 按 `serverAddress` **量级自动推断**；`dlmssettings.h` 中**无** `addressSize` 字段 | `dlmssettings.h:132/134` + `dlms.c` 帧构造 |
+| `cip_tracePdu` | `extern` 弱符号、库不实现 → 自己提供同名函数即可拿到**明文 PDU**；只需开 `gxignore.h:186` 的 `DLMS_TRACE_PDU` | `ciphering.h:192` |
+| 抓原始帧 | 在 bridge 的 send/recv 处汇总即可（TCP 上报文必经），无需 patch vendor | — |
+
+### 13.2 仍待确认 / 待做
+
+- `cl_methodLN` 的复杂入参（ARRAY / STRUCTURE / 浮点 / 日期）→ P3；注意 R17 的 vendor bug（分支条件恒假）
+- **精确报文类型标注**：让 bridge 把 C 层已解析的 `gxReplyData.command`（`DLMS_COMMAND`）随 trace 回传，即可去掉启发式误标风险（R20）
+- **地址宽度显式表达**（1/2/4 字节区分）→ P3，与 R16 / R25 同源
+- 密钥长度在 bridge 侧拦截（R22）
 
 ---
 
-*本方案为最终实现契约。批准后从 P1 开工，首个里程碑：`dlms-ios-app/` 可在 CI 完成 simulator 编译。*
+*本方案为最终实现契约。**首个里程碑已达成**：CI 三道闸门全绿（C 单测 / 模拟器编译 / Swift 单测）→ 出未签名 IPA → Windows 用 Sideloadly 真机侧载成功。*
+*下一步按 §1 推进：P2（GUAK/GUEK 对真表验证密钥映射 · IC 同步 · Association View 列表 · 明文 PDU trace），并核销 §12 中 R20–R25。*

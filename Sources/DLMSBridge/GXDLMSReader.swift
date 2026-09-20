@@ -58,21 +58,33 @@ final class GXDLMSReader {
     }
 
     func emitTrace(direction: LogEntry.Kind, frame: [UInt8]) {
-        let type = Self.classify(frame)
         onTrace?(LogEntry(
             time: Date(), kind: direction,
             text: direction == .tx ? "TX" : "RX",
-            hex: type.isEmpty ? HexUtil.format(frame) : "\(type)  \(HexUtil.format(frame))"))
+            label: Self.classify(frame),
+            hex: HexUtil.format(frame)))
     }
 
     /// 从帧头区(地址/控制之后)找 COSEM/HDLC 顶层 tag，识别报文类型。
     /// 纯启发式：只看前 16 字节里首个命中的 tag，供日志快速标注，非精确解码。
+    ///
+    /// ⚠️ HDLC 链路层控制字段取值必须照 enums.h 来（已逐一核实）：
+    ///      SNRM = 0x93 (enums.h:1203)
+    ///      UA   = 0x73 (enums.h:1208)
+    ///      DISC = 0x53 (enums.h:1223)
+    ///      DM   = 0x1F (enums.h:1193)
+    ///    这里曾误写成 SNRM=0x35 / DISC=0x40 —— 后果是这两个报文永远标不出来，
+    ///    而且 0x35/0x40 会撞上 HDLC 地址/长度字段产生**误标**。
+    ///
+    /// 进一步的改进方向：C 层其实已经精确解出了命令（gxReplyData.command / DLMS_COMMAND），
+    /// 让 bridge 把命令号一起回传即可去掉这份启发式。当前先保持启发式。
     static func classify(_ f: [UInt8]) -> String {
         let tags: [(UInt8, String)] = [
             (0x60, "AARQ"), (0x61, "AARE"), (0x62, "RLRQ"), (0x63, "RLRE"),
             (0xC0, "Get-Request"), (0xC4, "Get-Response"),
             (0xC1, "Set-Request"), (0xC5, "Set-Response"),
-            (0x35, "SNRM"), (0x73, "UA"), (0x40, "DISC"),
+            (0xC3, "Action-Request"), (0xC7, "Action-Response"),
+            (0x93, "SNRM"), (0x73, "UA"), (0x53, "DISC"), (0x1F, "DM"),
         ]
         for b in f.prefix(16) {
             if let m = tags.first(where: { $0.0 == b }) { return m.1 }

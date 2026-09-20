@@ -22,6 +22,8 @@ struct MainView: View {
     @State private var requestHex = ""
     @State private var showParams = false
     @State private var panel: Panel = .data
+    /// 「最近一条 OBIS」只在首次出现时恢复一次，避免每次回到本页覆盖用户手改的类/属性。
+    @State private var didRestoreRecent = false
 
     enum Panel: String, CaseIterable { case data = "解析"; case log = "报文" }
 
@@ -44,7 +46,13 @@ struct MainView: View {
             }
             .sheet(isPresented: $showParams) { ParamsView().environmentObject(store) }
             .onAppear {
-                currentObis = store.recentObis.first ?? currentObis
+                // 首次出现时把「最近一条 OBIS」连同它的类/属性一起恢复
+                // （三者必须一致，否则会拿错类去读）。只做一次，
+                // 免得每次回到本页都把用户手改的类/属性冲掉。
+                if !didRestoreRecent {
+                    didRestoreRecent = true
+                    if let code = store.recentObis.first { selectObis(code: code) }
+                }
             }
         }
     }
@@ -72,11 +80,12 @@ struct MainView: View {
     private var objectEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
+                // 键盘统一用系统默认：类与属性都可能填 16 进制（如 0x1F），
+                // 限定纯数字键盘反而是限制。
                 TextField("类 (10/16进制, 如 3 / 0x1F)", text: $currentClassText)
-                    .keyboardType(.numbersAndPunctuation)
                     .textFieldStyle(.roundedBorder)
                 TextField("属性", text: $currentAttr)
-                    .keyboardType(.numberPad).frame(width: 52).textFieldStyle(.roundedBorder)
+                    .frame(width: 52).textFieldStyle(.roundedBorder)
             }
             HStack {
                 TextField("OBIS（支持 , . - : 与16进制段）", text: $currentObis)
@@ -84,12 +93,12 @@ struct MainView: View {
                     .font(.system(.body, design: .monospaced))
                 Menu {
                     ForEach(store.recentObis, id: \.self) { code in
-                        Button(code) { currentObis = code }
+                        Button(code) { selectObis(code: code) }
                     }
                     if !store.obisLibrary.isEmpty {
                         Divider()
                         ForEach(store.obisLibrary) { item in
-                            Button(item.displayName) { currentObis = item.code }
+                            Button(item.displayName) { selectObis(code: item.code) }
                         }
                     }
                 } label: {
@@ -99,6 +108,18 @@ struct MainView: View {
             TextField("请求数据 (HEX，e.g. 11 01)", text: $requestHex)
                 .textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
         }
+    }
+
+    /// 选中一个 OBIS：**同时**把「接口类」与「属性」一起带过去。
+    /// 之前只写 currentObis，导致换条 OBIS 后类/属性还是上一条的，读出来就是错的对象。
+    /// `recentObis` 只存了 code 字符串，所以按 code 回 OBIS 清单里反查元数据；
+    /// 清单里查不到该 code（例如手输且未入库）时只更新逻辑名，不动类/属性，
+    /// 免得把用户刚手填的值抹成默认。
+    private func selectObis(code: String) {
+        currentObis = code
+        guard let item = store.obisLibrary.first(where: { $0.code == code }) else { return }
+        currentClassText = "\(item.objectClass)"
+        currentAttr = "\(item.attribute)"
     }
 
     // MARK: - 读 / 写 / 执行
@@ -160,10 +181,16 @@ struct MainView: View {
                     Text(e.time.dlmsLogText).font(.caption2)
                         .foregroundStyle(.tertiary).frame(width: 74, alignment: .leading)
                     Text(e.text).font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(color(for: e.kind)).frame(width: 28, alignment: .leading)
+                        .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
+                    // 报文类型单独占一列、固定宽度，这样 HEX 的起始 x 才是恒定的。
+                    // 早前把类型拼进 hex 串中间加两个空格：类型名长度不一
+                    // （AARQ 4 字符 / Get-Response 12 字符）就又把 HEX 挤错位了。
+                    Text(e.label).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
                     Text(e.hex ?? "")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(color(for: e.kind))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
@@ -212,7 +239,8 @@ struct MainView: View {
                    // GXDLMSReader.run 的 classVal 参数就是 Int（内部再转 UInt16 给 C）。
                    // 这里不要再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
                    classVal: NumberInput.parse(currentClassText) ?? 3,
-                   attr: Int(currentAttr) ?? 2,
+                   // 属性与「类」用同一套 10/16 进制识别（键盘已放开，用户可能填 0x03）
+                   attr: NumberInput.parse(currentAttr) ?? 2,
                    hex: requestHex) {
             session.isBusy = false
             store.persist()
