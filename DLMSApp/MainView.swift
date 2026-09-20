@@ -155,10 +155,13 @@ struct MainView: View {
                 .pickerStyle(.segmented)
 
             if panel == .data {
-                HStack {
-                    Toggle("解析", isOn: $store.config.parseEnabled).labelsHidden()
-                    Spacer()
-                    Button("清空") { store.parsedText = "" }
+                panelHeader(clearEnabled: !store.parsedText.isEmpty) {
+                    HStack(spacing: 6) {
+                        Toggle("解析", isOn: $store.config.parseEnabled).labelsHidden()
+                        Text("解析使能").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                } clear: {
+                    store.parsedText = ""
                 }
                 Text(store.parsedText.isEmpty ? "（暂无数据）" : store.parsedText)
                     .font(.system(.caption, design: .monospaced))
@@ -166,9 +169,37 @@ struct MainView: View {
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.1)))
             } else {
+                panelHeader(clearEnabled: !store.logs.isEmpty) {
+                    Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
+                } clear: {
+                    store.clearLogs()
+                }
                 logList
             }
         }
+    }
+
+    /// 两个面板共用的标题行：左边是本面板的开关/状态，右边**固定**是「清空」。
+    /// 做成同一套布局，是为了切面板时视线不用重新找按钮 —— 之前报文面板压根没有清空入口。
+    private func panelHeader<Leading: View>(clearEnabled: Bool = true,
+                                            @ViewBuilder leading: () -> Leading,
+                                            clear: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            leading()
+            Spacer(minLength: 8)
+            Button(action: clear) {
+                Label("清空", systemImage: "trash").font(.caption2)
+            }
+            .disabled(!clearEnabled)
+        }
+    }
+
+    /// 报文条数提示。`Store` 最多留 2000 条，但列表只渲染最近 200 条 ——
+    /// 必须让用户看得见这个差别，否则会以为"清空"删掉的和屏幕上的不是同一批。
+    private var logStatusText: String {
+        let total = store.logs.count
+        guard total > 0 else { return "" }   // 空的时候让下方占位文字说话，避免重复
+        return total > 200 ? "共 \(total) 条 · 显示最近 200" : "共 \(total) 条"
     }
 
     private var logList: some View {
