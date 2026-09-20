@@ -102,7 +102,7 @@ final class GXDLMSReader {
     private func syncRun(op: DLMSOp?, obis: [UInt8]?, classVal: Int, attr: Int, hex: String?) throws -> String {
         transport.recvTimeoutMs = max(config.recvTimeoutMs, 500)
 
-        try transport.connect(host: config.ip, port: UInt16(config.port))
+        try transport.connect(host: config.ip, port: UInt16(clamping: config.port))
         defer { transport.cancel() }
         state("已连接")
 
@@ -149,17 +149,17 @@ final class GXDLMSReader {
         case .read:
             state("读 \(codeHex)")
             ret = obis.withUnsafeBufferPointer { p in
-                dlms_read(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), &out, &outLen)
+                dlms_read(ctx, p.baseAddress, UInt16(clamping: classVal), UInt8(clamping: attr), &out, &outLen)
             }
         case .write:
             state("写 \(codeHex)")
             ret = obis.withUnsafeBufferPointer { p in
-                dlms_write(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), cStr(hex ?? ""), &out, &outLen)
+                dlms_write(ctx, p.baseAddress, UInt16(clamping: classVal), UInt8(clamping: attr), cStr(hex ?? ""), &out, &outLen)
             }
         case .method:
             state("执行 \(codeHex)")
             ret = obis.withUnsafeBufferPointer { p in
-                dlms_method(ctx, p.baseAddress, UInt16(classVal), UInt8(attr), cStr(hex ?? ""), &out, &outLen)
+                dlms_method(ctx, p.baseAddress, UInt16(clamping: classVal), UInt8(clamping: attr), cStr(hex ?? ""), &out, &outLen)
             }
         }
 
