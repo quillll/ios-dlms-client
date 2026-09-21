@@ -515,8 +515,11 @@ int dlms_initialize(dlmsCtx* c)
             ret = cl_methodLN(&c->settings, LN,
                               DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME,
                               1, &data, &msg);
-            var_clear(&data);
-            bb_clear(&challenge);
+            // ⚠️ 这里**绝不能**调 var_clear(&data)：
+            // data.byteArr 指向的是**栈上**的 challenge，而 var_clear() 对 OCTET_STRING
+            // 变体会去释放 byteArr → free 一个栈地址 → 非法释放直接崩溃。
+            // 官方 cl_getApplicationAssociationRequest 同样只做 var_init + 赋值、不做 clear。
+            // 该缓冲区在本块末尾统一释放（见下面的 bb_clear）。
         }
 
         if (ret == DLMS_ERROR_CODE_OK)
@@ -532,6 +535,7 @@ int dlms_initialize(dlmsCtx* c)
             ret = cl_parseApplicationAssociationResponse(&c->settings, &reply.data);
             c->settings.cipher.security = savedSecurity;
         }
+        bb_clear(&challenge);   // 发送与解析都已完成，这里才释放 GMAC 缓冲
         mes_clear(&msg);
         reply_clear(&reply);
         if (ret != DLMS_ERROR_CODE_OK)
