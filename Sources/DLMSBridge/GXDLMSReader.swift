@@ -165,7 +165,17 @@ final class GXDLMSReader {
         dlms_set_trace(ctx, rUser, dlmsTransportTrace)
 
         state("建链中")
-        try check(dlms_initialize(ctx), step: "建链")
+        // 建链失败时把"卡在第几步""是不是发送失败"一起报出来。
+        // 报文日志天然看不到"send 失败"（trace 只在发送成功之后才调用），
+        // 所以只凭报文分不清「请求没生成」「生成但发不出去」「发出去了没回应」—— 这两个接口补上。
+        let initCode = dlms_initialize(ctx)
+        if initCode != 0 {
+            let step = dlms_lastStep(ctx)
+            let stepName = String(cString: dlms_step_name(step))
+            let sendNote = dlms_sendFailed(ctx) != 0 ? "，发送失败（日志里不会有这帧）" : ""
+            throw DLMSReaderError.step(
+                "建链失败（步骤 \(step) · \(stepName)\(sendNote)）：\(errorText(initCode))")
+        }
 
         // 连接测试模式：只建链即返回。
         guard let op else { return "连接成功" }

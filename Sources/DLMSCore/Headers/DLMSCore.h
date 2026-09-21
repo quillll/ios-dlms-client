@@ -95,6 +95,17 @@ int dlms_disconnect(dlmsCtx* ctx);
 // 错误码转可读字符串（静态存储）。
 const char* dlms_error_string(int code);
 
+// ── 诊断查询（v1.5 新增）───────────────────────────────────────────────
+// 背景：报文日志里**看不到"发送失败"** —— dlmsSendFrame 的 trace 只在发送成功后才调用。
+// 所以只凭报文无法区分：(a) 请求没生成出来 (b) 生成出来了但 send 失败 (c) 发出去了但 recv 超时。
+// 这三个接口把差别补上：
+//   dlms_lastStep()   失败发生在 dlms_initialize 的哪一步（0 = 未开始）
+//   dlms_sendFailed() 最近一次 send 是否失败（1 = 发不出去）
+//   dlms_step_name()  步骤号 → 可读名称（静态字符串，中文）
+int dlms_lastStep(dlmsCtx* ctx);
+int dlms_sendFailed(dlmsCtx* ctx);
+const char* dlms_step_name(int step);
+
 #ifdef __cplusplus
 }
 #endif

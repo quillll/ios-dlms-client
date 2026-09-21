@@ -434,25 +434,50 @@
 
 ### 16.1 已定位的三个问题
 
-**P1（根因候选）HLS 只走了一半：AARE 说要认证，客户端却没发应答 AARQ**
+**P1（根因范围已收窄）AARE 之后，HLS 应答一个字节都没发出去**
 
 ```
 14:47:30.793  TX  SNRM  7E A0 07 03 03 93 8C 11 7E
 14:47:31.239  RX  UA    7E A0 1E 03 03 73 40 CC 81 80 12 05 01 … 53 3B 7E
 14:47:31.268  TX  AARQ  7E A0 58 03 03 10 F0 C0 E6 E6 00 60 4A A1 09 …
 14:47:31.729  RX  AARE  7E A0 64 03 03 30 34 3A E6 E7 00 61 56 A1 09 …
-14:47:43.977  TX  DISC  7E A0 07 03 03 53 80 D7 7E      ← 中间 12 秒没有任何 TX
+14:47:31.959  RX  1D 00 7D 00 07 CB A0 7E      ← AARE 尾段（TCP 分段）
+14:47:43.977  TX  DISC  7E A0 07 03 03 53 80 D7 7E   ← 中间 12 秒无任何 TX
 14:47:55.994  建链失败: Data receive failed.
 ```
 
-- AARE 内 `A3 05 A1 03 02 01 0E` = result-source-diagnostic `INTEGER 14` = **authentication-required** →
-  按 DLMS 此时**必须发第二次 AARQ**（AC 带 GMAC 应答），由 `DLMSBridge.c:407-418` 的
-  `cl_getApplicationAssociationRequest` → `dlmsReadDataBlock` 发出。
-  **但日志里 `31.729` 到 `43.977` 之间一个 TX 都没有** → 这一步没发出去。
-- **机制 OID 不一致（强候选原因）**：客户端 AARQ 提的是
-  `8B 07 60 85 74 05 08 02 02`，而表 AARE 回的是 `89 07 60 85 74 05 08 02 05`。
-- 报错 `Data receive failed` 是 `dlmsSendFrame` 的 recv 超时 → 更像是**最后 DISC 没等到回应**，
-  而不是 HLS 失败本身 —— 所以**当前错误信息不足以定位 P1**，见 16.3 第 1 步。
+**逐字节核验（用长度自校验，不是靠肉眼扫）**：
+
+| 帧 | 校验 | 结论 |
+|---|---|---|
+| **SNRM** | 内容 `03 03 93 8C 11` = 5，长度域 `07` = 5+2 ✓ | 地址 `03 03` = 服务端 0x0001 + 客户端 0x0001 ✓（7bit 编码 `(1<<1)\|1 = 0x03`）**正确** |
+| **AARQ** | `60 4A` = 74；`A1 09`+`A6 0A`+`8A 02`+`8B 07`+`AC 12`+`BE 10` 各级相加 = **74 严丝合缝** ✓ | 结构完全合法 |
+| AARQ 机制 | `8B 07 60 85 74 05 08 02 **05**` | **= HIGH_GMAC(5)，与配置一致** ✓ |
+| **AARE** | `61 56` = 86；`A1 09`+`A2 03`+`A3 05`+`A4 0A`+`88 02`+`89 07`+`AA 12`+`BE 10` = **86 ✓** | 完整、合法 |
+| AARE 诊断 | `A3 05 A1 03 02 01 0E` = **14 = authentication-required** | 表要求走 HLS 挑战应答 |
+| AARE 服务器标题 | `A4 0A 04 08 48 58 45 03 00 00 14 88` | `48 58 45 03 00 00 14 88` |
+| AARE 服务器挑战 | `AA 12 80 10 35 FC 74 0C AC 03 8F C6 61 39 4C E0 03 AB 09 EC` | 16 字节 |
+
+**⚠️ 更正**：本报告早前称"机制 OID 不一致（`02 02` vs `02 05`）"—— **是读图错误，已撤回**。
+两侧机制都是 `…02 05` ✓。同批被撤回的还有"`8B 07` 后有孤立字节"的判断（长度自校验证明没有）。
+
+**真正确凿的结论**：
+1. 地址、SNRM/UA、AARQ、AARE **全部正确**，表也正常应答并进入 HLS 挑战阶段 ✓
+2. **AARE 之后 12 秒内没有任何 TX** ✗ —— 即 `DLMSBridge.c:407-427` 里
+   `cl_getApplicationAssociationRequest` → `dlmsReadDataBlock` 那一步**没有发出任何请求** ✗
+3. **12 秒 = 4 × 3 秒**，正好是 `dlmsSendFrame` 的 `++fail > 3` + recv 超时 3s ✓
+   → 说明**卡在 recv 上**，不是"发出去被拒"
+4. 之后 DISC 又花 12 秒（同样 4×3s）→ 最终报 `Data receive failed` ✓
+
+**为什么还不能定死**：`dlmsSendFrame` 的 trace 在**发送成功之后**才调用
+（`DLMSBridge.c:82-89`）—— 所以"发送本身失败"这条路径**在日志里不留任何痕迹** ✗。
+即：无法只用报文区分「请求没生成出来」和「生成出来了但 send 失败」。
+
+**顺带从报文里发现的两件事**：
+- **报文类型列不可信**：AARQ 被标成了 `Get-Request` ✗ —— `classify` 扫前 16 字节时，
+  第 8 个字节 HCS 的 `C0` 先命中，而真正的 APDU `0x60` 在第 12 字节 ✗。
+  这是 R20（启发式误标）的**实测复现**，看日志时别信类型列。
+- **长帧确实被 TCP 分段**：AARE 104 字节分成 2 段（94 + 尾段）到达 ✓ 印证 P2。
 
 **P2 长帧被 TCP 分段 + 超时丢弃晚到字节**
 
@@ -502,10 +527,32 @@ else if (value < 0x10000000) { address = 4 字节形式;                        
 
 | 步骤 | 状态 |
 |---|---|
-| ① 可观测性（返回"失败步骤 + C 错误码"） | **待你确认** —— 定 P1 的关键 |
-| ② 修 HLS 应答（疑似 mechanism OID） | 依赖 ① 的结果 |
-| ③ 传输层预读缓冲 + 字符间超时断帧（D5 修复） | **待你确认** |
-| ④ 地址口径对齐 + 宽度可选（4/2/1） | ✅ **已实现** —— `ConnectionConfig.serverAddressEncoded` / `serverAddressEffectiveWidth` / `serverAddressWireHex`；`target` 改走编码后值；ParamsView 加宽度选择器与"编码后字节"预览；新增 7 个单测 |
+| ① 可观测性（步骤码 + 区分"发送失败"） | ✅ **已实现**（见下） |
+| ② 修 HLS 应答 | 依赖 ① 的现场复现结果 |
+| ③ 传输层预读缓冲 + 字符间超时断帧 | ✅ **已实现**（= 报告 D5） |
+| ④ 地址口径对齐 + 宽度可选（4/2/1） | ✅ 已实现 |
+
+**① 可观测性——为什么必须做**：
+`dlmsSendFrame` 的 trace 在**发送成功之后**才调用（`DLMSBridge.c` 原 82-89 行），
+所以"send 失败"这条路径**在报文日志里一个字节都不留**。只凭报文无法区分：
+(a) 请求没生成出来 (b) 生成出来了但 send 失败 (c) 发出去了但 recv 超时。
+
+实现：
+- `dlmsCtx` 增加两个诊断字段（`dlmsCtx` 在公开头里是 **opaque**，加字段不影响 ABI/Swift）
+  - `lastStep` —— `dlms_initialize` 的步骤号（`DLMS_STEP_*`），失败时停在哪一步
+  - `sendFailed` —— 最近一次 `dlmsSendFrame` 的 send 是否失败
+- 新增三个查询接口（`DLMSCore.h`）：`dlms_lastStep` / `dlms_sendFailed` / `dlms_step_name`
+- 步骤粒度刻意做到"生成 vs 收发"两级：
+  `SNRM请求生成 / SNRM·UA收发 / AARQ生成 / AARQ·AARE收发 / HLS应答生成 / HLS应答收发`
+  —— 生成失败 ⇒ 停在 `*_请求生成`；收发失败 ⇒ 停在 `*_收发`，再看 `sendFailed` 区分发/收
+- Swift 侧报错变成：
+  `建链失败（步骤 5 · HLS 应答生成）：<错误码文本>`
+  若 send 失败会追加"，发送失败（日志里不会有这帧）"
+
+**③ 传输层预读缓冲**：
+`GXDLMSTransport` 增加带锁的 `pending: Data`；`receive` 的 completion **无论是否超时都先入队**，
+`receive` 开头先消费队列。这样"超时后晚到的字节"不再永久丢失（原实现丢在已失效的局部变量里）。
+`connect()` / `cancel()` 会清空缓冲，避免新会话继承残留。
 
 ---
 

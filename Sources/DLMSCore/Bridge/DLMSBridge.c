@@ -45,6 +45,25 @@ struct dlmsCtx
     dlmsRecvFn recv;
     dlmsTraceFn trace;
     void* traceUser;
+    // ── 诊断字段（v1.5 加）──────────────────────────────────────────────
+    // 起因：现场日志只报 "Data receive failed"，无法区分下面三种情况：
+    //   (a) 请求压根没生成出来   (b) 生成出来了但 send 失败   (c) 发出去了但 recv 超时
+    // 而 dlmsSendFrame 的 trace 只在**发送成功之后**才调用，
+    // 所以 (b) 这条路径在报文日志里一个字节都不留 —— 必须单独记。
+    int lastStep;                  // dlms_initialize 卡在哪一步（见 DLMS_STEP_*）
+    int sendFailed;                // 最近一次 dlmsSendFrame 的 send 是否失败
+};
+
+// dlms_initialize 的步骤号。应用层据此把"建链失败"细化成"第几步失败"。
+enum
+{
+    DLMS_STEP_NONE = 0,
+    DLMS_STEP_SNRM_REQUEST,        // 1 生成 SNRM 请求
+    DLMS_STEP_SNRM_RESPONSE,       // 2 SNRM 收发 + 解析 UA
+    DLMS_STEP_AARQ_REQUEST,        // 3 生成 AARQ
+    DLMS_STEP_AARE_RESPONSE,       // 4 AARQ 收发 + 解析 AARE
+    DLMS_STEP_HLS_REQUEST,         // 5 生成 HLS 应答（0.0.40.0.0.255 method 1）
+    DLMS_STEP_HLS_RESPONSE         // 6 HLS 应答收发 + 解析
 };
 
 // 追加到 rx 末尾，必要时先扩容。
@@ -81,8 +100,12 @@ static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
 
     if (c->send(c->user, data->data, (int)data->size) != 0)
     {
+        // 记下来：这次 send 失败。报文日志里看不到它（trace 在成功后才有），
+        // 只能靠这个标志让应用层区分"发不出去"和"发出去没回应"。
+        c->sendFailed = 1;
         return DLMS_ERROR_CODE_SEND_FAILED;
     }
+    c->sendFailed = 0;
     if (c->trace != NULL)
     {
         c->trace(c->traceUser, 1, data->data, (int)data->size);
@@ -115,9 +138,11 @@ static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
             // 重发（Gurux 例程行为）。
             if (c->send(c->user, data->data, (int)data->size) != 0)
             {
+                c->sendFailed = 1;
                 ret = DLMS_ERROR_CODE_SEND_FAILED;
                 break;
             }
+            c->sendFailed = 0;
             continue;
         }
         if (c->trace != NULL)
@@ -214,6 +239,36 @@ void dlms_free(dlmsCtx* c)
         cl_clear(&c->settings);
         bb_clear(&c->rx);
         free(c);
+    }
+}
+
+// ── 诊断查询（v1.5 新增）──────────────────────────────────────────────
+// 现场日志只报 "Data receive failed" 时，靠这三个函数才知道卡在哪一步、是不是发送失败。
+// 建议展示成：建链失败（步骤 5 · HLS 应答生成）：<dlms_error_string(code)>
+// 其中若 dlms_sendFailed() 为 1，说明是**发不出去**；否则是发出去但没等到回应。
+// （报文日志天然看不到"send 失败"——trace 只在发送成功后调用。）
+
+int dlms_lastStep(dlmsCtx* c)
+{
+    return (c == NULL) ? 0 : c->lastStep;
+}
+
+int dlms_sendFailed(dlmsCtx* c)
+{
+    return (c == NULL) ? 0 : c->sendFailed;
+}
+
+const char* dlms_step_name(int step)
+{
+    switch (step)
+    {
+    case DLMS_STEP_SNRM_REQUEST:  return "SNRM 请求生成";
+    case DLMS_STEP_SNRM_RESPONSE: return "SNRM/UA 收发";
+    case DLMS_STEP_AARQ_REQUEST:  return "AARQ 生成";
+    case DLMS_STEP_AARE_RESPONSE: return "AARQ/AARE 收发";
+    case DLMS_STEP_HLS_REQUEST:   return "HLS 应答生成";
+    case DLMS_STEP_HLS_RESPONSE:  return "HLS 应答收发";
+    default:                      return "未开始";
     }
 }
 
@@ -368,9 +423,11 @@ int dlms_initialize(dlmsCtx* c)
     {
         reply_init(&reply);
         mes_init(&msg);
+        c->lastStep = DLMS_STEP_SNRM_REQUEST;
         ret = cl_snrmRequest(&c->settings, &msg);
         if (ret == DLMS_ERROR_CODE_OK)
         {
+            c->lastStep = DLMS_STEP_SNRM_RESPONSE;
             ret = dlmsReadDataBlock(c, &msg, &reply);
         }
         if (ret == DLMS_ERROR_CODE_OK)
@@ -388,9 +445,11 @@ int dlms_initialize(dlmsCtx* c)
     // AARQ -> AARE。
     reply_init(&reply);
     mes_init(&msg);
+    c->lastStep = DLMS_STEP_AARQ_REQUEST;
     ret = cl_aarqRequest(&c->settings, &msg);
     if (ret == DLMS_ERROR_CODE_OK)
     {
+        c->lastStep = DLMS_STEP_AARE_RESPONSE;
         ret = dlmsReadDataBlock(c, &msg, &reply);
     }
     if (ret == DLMS_ERROR_CODE_OK)
@@ -409,9 +468,11 @@ int dlms_initialize(dlmsCtx* c)
     {
         reply_init(&reply);
         mes_init(&msg);
+        c->lastStep = DLMS_STEP_HLS_REQUEST;
         ret = cl_getApplicationAssociationRequest(&c->settings, &msg);
         if (ret == DLMS_ERROR_CODE_OK)
         {
+            c->lastStep = DLMS_STEP_HLS_RESPONSE;
             ret = dlmsReadDataBlock(c, &msg, &reply);
         }
         if (ret == DLMS_ERROR_CODE_OK)

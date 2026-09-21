@@ -48,6 +48,15 @@ static void test_ctx(void)
     int stlen = 8;
     CHECK(dlms_get_serverSystemTitle(c, st, &stlen) == 0 && stlen == 8, "serverSystemTitle copy shape");
 
+    // 诊断接口（v1.5）：新 ctx 应处于"未开始"状态，步骤名要能取到非空串。
+    // 这组同时证明了 dlms_lastStep / dlms_sendFailed / dlms_step_name 确实链得上
+    //（现场"建链失败"细化定位就靠它们）。
+    CHECK(dlms_lastStep(c) == 0, "diag: lastStep starts at 0");
+    CHECK(dlms_sendFailed(c) == 0, "diag: sendFailed starts at 0");
+    CHECK(dlms_step_name(0)[0] != '\0', "diag: step_name(0) non-empty");
+    CHECK(dlms_step_name(5)[0] != '\0', "diag: step_name(5) non-empty");
+    CHECK(dlms_lastStep(NULL) == 0 && dlms_sendFailed(NULL) == 0, "diag: NULL-safe");
+
     dlms_free(c);
 }
 
