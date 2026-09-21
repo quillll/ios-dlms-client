@@ -468,6 +468,28 @@ int dlms_initialize(dlmsCtx* c)
     {
         reply_init(&reply);
         mes_init(&msg);
+        // ── 照官方做法：临时改 settings，用完还原 ────────────────────────────
+        // 出处：GuruxDLMSClientExample/src/communication.c 的 com_updateInvocationCounter
+        //（先存起 authentication/cipher.security，临时置成 NONE，做完再还原）。
+        //
+        // 为什么必须这么做：cip_encrypt()（ciphering.c:681）有一道守卫
+        //     if (settings->security == DLMS_SECURITY_NONE || …) return INVALID_PARAMETER;
+        // 而 HLS-GMAC 算挑战应答时，dlms_secure() 已经**显式传了**
+        // DLMS_SECURITY_AUTHENTICATION（dlms.c:6676），却仍被这道查"会话整体 security"的
+        // 守卫拒掉 —— 于是 security=NONE 时根本算不出 GMAC。
+        // （.NET 库没有这道守卫，所以 GXDLMSDirector 用 None + GMAC 可以正常关联。）
+        //
+        // 临时置成 0x10 是安全的，因为：
+        //   · 0x10 **不含加密位** → isCiphered() 仍为 false
+        //     → HLS 应答仍是**明文 C3**，不是加密的 CB
+        //   · 安全头本来就该是 SC=0x10（.NET 成功报文即如此）
+        //   · 应用上下文在 AARQ 阶段就已定（…08 01 01），与本次无关
+        DLMS_SECURITY savedSecurity = c->settings.cipher.security;
+        if (savedSecurity == DLMS_SECURITY_NONE)
+        {
+            c->settings.cipher.security = DLMS_SECURITY_AUTHENTICATION;
+        }
+
         c->lastStep = DLMS_STEP_HLS_REQUEST;
         ret = cl_getApplicationAssociationRequest(&c->settings, &msg);
         if (ret == DLMS_ERROR_CODE_OK)
@@ -479,6 +501,8 @@ int dlms_initialize(dlmsCtx* c)
         {
             ret = cl_parseApplicationAssociationResponse(&c->settings, &reply.data);
         }
+
+        c->settings.cipher.security = savedSecurity;   // 还原，不做任何持久改动
         mes_clear(&msg);
         reply_clear(&reply);
         if (ret != DLMS_ERROR_CODE_OK)
