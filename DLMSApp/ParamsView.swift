@@ -67,6 +67,25 @@ struct ParamsView: View {
                     }
                 }
                 HStack { Text("通信地址(服务器)"); Spacer(); hexDWordField($store.config.serverAddress) }
+                // 地址宽度：Gurux 其实是**按数值大小自动定宽**的，所以这里选的和实际生效的
+                // 可能不一致 —— 下面那行会把"编码后的真实字节"显示出来，直接对照即可。
+                Picker("地址宽度", selection: $store.config.serverAddressWidth) {
+                    Text("4 字节").tag(4)
+                    Text("2 字节").tag(2)
+                    Text("1 字节").tag(1)
+                }
+                HStack(spacing: 4) {
+                    Image(systemName: store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
+                          ? "checkmark.circle" : "exclamationmark.triangle.fill")
+                    Text("编码后 \(store.config.serverAddressWireHex)（实际 \(store.config.serverAddressEffectiveWidth) 字节）"
+                         + (store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
+                            ? " · 末字节 bit0=1 表示地址域结束"
+                            : " · 与所选 \(store.config.serverAddressWidth) 字节不符"))
+                    Spacer(minLength: 0)
+                }
+                .font(.caption2)
+                .foregroundStyle(store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
+                                 ? Color.secondary : Color.orange)
             } else {
                 HStack { Text("源地址(WR)"); Spacer(); hexField($store.config.wrapperSource) }
                 HStack { Text("目标地址(WR)"); Spacer(); hexField($store.config.wrapperTarget) }

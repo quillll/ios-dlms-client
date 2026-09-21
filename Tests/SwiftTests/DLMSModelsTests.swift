@@ -43,6 +43,64 @@ final class ObisUtilTests: XCTestCase {
     }
 }
 
+/// 通信地址：编码前（逻辑 16 位 + 物理 16 位）→ 编码后（喂 cl_init 的值）。
+/// 关键用例是默认的 `00013FFF`：逻辑 `0x0001` + 物理 `0x3FFF`，
+/// 4 字节下应得到 `0x7FFF`，线上地址域为 `00 02 FE FF`（末字节 bit0=1 表示地址域结束）。
+final class ServerAddressEncodingTests: XCTestCase {
+    private func cfg(_ addr: UInt32, _ width: Int) -> ConnectionConfig {
+        var c = ConnectionConfig()
+        c.serverAddress = addr
+        c.serverAddressWidth = width
+        return c
+    }
+
+    func testDefaultSplitsLogicalAndPhysical() {
+        let c = cfg(0x00013FFF, 4)
+        XCTAssertEqual(c.serverLogical, 0x0001)
+        XCTAssertEqual(c.serverPhysical, 0x3FFF)
+    }
+
+    func testFourByteEncodedValue() {
+        let c = cfg(0x00013FFF, 4)
+        XCTAssertEqual(c.serverAddressEncoded, 0x7FFF)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 4)
+    }
+
+    func testFourByteWireBytes() {
+        XCTAssertEqual(cfg(0x00013FFF, 4).serverAddressWireHex, "0002FEFF")
+    }
+
+    func testTwoByte() {
+        let c = cfg((0x01 << 16) | 0x05, 2)
+        XCTAssertEqual(c.serverAddressEncoded, (0x01 << 7) | 0x05)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 2)
+    }
+
+    func testOneByte() {
+        let c = cfg(0x10, 1)
+        XCTAssertEqual(c.serverAddressEncoded, 0x10)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 1)
+        XCTAssertEqual(c.serverAddressWireHex, "21")
+    }
+
+    func testWidthMismatchWhenLogicalIsZero() {
+        // 选了 4 字节但逻辑地址为 0 → 值 < 0x4000，Gurux 只会用 2 字节。
+        // UI 靠 effectiveWidth != serverAddressWidth 提示这种情况。
+        let c = cfg(0x00003FFF, 4)
+        XCTAssertEqual(c.serverAddressEncoded, 0x3FFF)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 2)
+    }
+
+    func testTargetUsesEncodedValueForHDLC() {
+        var c = cfg(0x00013FFF, 4)
+        c.framing = .hdlc
+        XCTAssertEqual(c.target, 0x7FFF)
+        c.framing = .wrapper
+        c.wrapperTarget = 0x01
+        XCTAssertEqual(c.target, 0x01)
+    }
+}
+
 final class EnumTests: XCTestCase {
     func testAuthRawValues() {
         XCTAssertEqual(Auth.none.rawValue, 0)

@@ -144,7 +144,11 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     var framing: Framing = .hdlc
     var clientPreset: ClientPreset = .custom
     var clientAddress: UInt32 = 0x01            // HDLC 客户端 / Wrapper 源
-    var serverAddress: UInt32 = 0x00013FFF      // HDLC 通信地址(服务器)
+    var serverAddress: UInt32 = 0x00013FFF      // HDLC 通信地址(服务器)：编码前形态 = 逻辑(高16位)+物理(低16位)
+    /// 通信地址宽度（字节）：4 / 2 / 1，默认 4。
+    /// ⚠️ Gurux 是**按数值大小自动选宽度**的（见 `serverAddressEncoded`），
+    /// 所以这个选择只在"数值量级刚好落在该宽度区间"时才真正生效 —— UI 里会显示实际生效的宽度。
+    var serverAddressWidth: Int = 4
     var wrapperSource: UInt32 = 0x01
     var wrapperTarget: UInt32 = 0x01
     var auth: Auth = .highGMAC                  // 认证默认 HLS-GMAC
@@ -176,6 +180,7 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         clientPreset = c.dlmsValue(.clientPreset, clientPreset)
         clientAddress = c.dlmsValue(.clientAddress, clientAddress)
         serverAddress = c.dlmsValue(.serverAddress, serverAddress)
+        serverAddressWidth = c.dlmsValue(.serverAddressWidth, serverAddressWidth)
         wrapperSource = c.dlmsValue(.wrapperSource, wrapperSource)
         wrapperTarget = c.dlmsValue(.wrapperTarget, wrapperTarget)
         auth = c.dlmsValue(.auth, auth)
@@ -206,8 +211,56 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
 
     /// 运行时 source/client 地址（封装相关）。
     var source: UInt32 { framing == .wrapper ? wrapperSource : clientAddress }
-    /// 运行时 target/server 地址（封装相关）。
-    var target: UInt32 { framing == .wrapper ? wrapperTarget : serverAddress }
+    /// 运行时 target/server 地址（封装相关）。HDLC 必须用**编码后**的值，见下。
+    var target: UInt32 { framing == .wrapper ? wrapperTarget : serverAddressEncoded }
+
+    // MARK: - 通信地址：编码前（逻辑+物理）→ 编码后（喂 cl_init）
+
+    /// 编码**前**的形态：高 16 位 = 逻辑地址，低 16 位 = 物理地址。
+    /// 默认 `00013FFF` = 逻辑 `0x0001` + 物理 `0x3FFF`。
+    var serverLogical: UInt32 { (serverAddress >> 16) & 0xFFFF }
+    var serverPhysical: UInt32 { serverAddress & 0xFFFF }
+
+    /// 喂给 `cl_init` 的 serverAddress。
+    ///
+    /// Gurux 在 `dlms.c:2420` 按 **7bit/字节 + bit0 扩展位**打包，而且**按数值大小自动选宽度**：
+    ///   `< 0x80` → 1 字节；`< 0x4000` → 2 字节；否则 → 4 字节。
+    /// 它期望的输入是"已按目标宽度拼好的值"：
+    ///   - 4 字节：共 28 位 = 逻辑 14 位 + 物理 14 位 → `logical << 14 | physical`
+    ///   - 2 字节：共 14 位 = 逻辑  7 位 + 物理  7 位 → `logical <<  7 | physical`
+    ///   - 1 字节：只有物理 7 位
+    /// 所以**不能**把 UI 的 `00013FFF` 直接喂进去 —— Gurux 会按 `v>>14` 解出逻辑=0x4F，编码出错误的地址域。
+    var serverAddressEncoded: UInt32 {
+        switch serverAddressWidth {
+        case 1:  return serverPhysical & 0x7F
+        case 2:  return ((serverLogical & 0x7F) << 7) | (serverPhysical & 0x7F)
+        default: return ((serverLogical & 0x3FFF) << 14) | (serverPhysical & 0x3FFF)
+        }
+    }
+
+    /// Gurux **实际**会用的地址宽度（按数值量级推断，可能与 `serverAddressWidth` 不同）。
+    /// 例：选了 4 字节但逻辑地址为 0 → 值 < 0x4000 → 实际只有 2 字节。UI 用它提示。
+    var serverAddressEffectiveWidth: Int {
+        let v = serverAddressEncoded
+        if v < 0x80 { return 1 }
+        if v < 0x4000 { return 2 }
+        return 4
+    }
+
+    /// 编码后地址域的实际字节（大端；**末字节 bit0=1 表示地址域结束**）。
+    /// 仅供 UI 预览 —— 可以直接拿去和表的期望值对照，省得靠猜。
+    var serverAddressWireHex: String {
+        let v = serverAddressEncoded
+        switch serverAddressEffectiveWidth {
+        case 1:
+            return String(format: "%02X", (v << 1) | 1)
+        case 2:
+            return String(format: "%04X", (v & 0x3F80) << 2 | (v & 0x7F) << 1 | 1)
+        default:
+            return String(format: "%08X",
+                          (v & 0xFE00000) << 4 | (v & 0x1FC000) << 3 | (v & 0x3F80) << 2 | (v & 0x7F) << 1 | 1)
+        }
+    }
     var addressSummary: String {
         framing == .wrapper
             ? "Wrapper 源\(wrapperSource.hex2) 目标\(wrapperTarget.hex2)"
