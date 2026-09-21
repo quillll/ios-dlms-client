@@ -464,12 +464,61 @@ int dlms_initialize(dlmsCtx* c)
     }
 
     // HLS challenge（认证 > LOW）。
+    //
+    // ── 为什么不能直接调 cl_getApplicationAssociationRequest ──────────────
+    // cipher.security 这一个字段在库里**同时管两件事**：
+    //   ① APDU 是否加密打包：isCiphered()（dlmsSettings.c:439）= (security != NONE)
+    //      → 决定 HLS 应答打成明文 C3 还是加密壳 CB
+    //   ② 能否算 GMAC：cip_encrypt()（ciphering.c:681）的守卫
+    //      `if (settings->security == NONE || ...) return INVALID_PARAMETER`
+    //      即使 dlms_secure()（dlms.c:6676）已显式传入 DLMS_SECURITY_AUTHENTICATION，
+    //      仍被这道查"会话整体"的守卫拒掉 → security=NONE 时算不出 GMAC。
+    // .NET 库没有这道守卫，所以 GXDLMSDirector 用 None+GMAC 能正常关联；
+    // C 库这里把两件事耦合在一个字段上，必须**在时间上切开**：
+    //   · 算 GMAC 那一刻：临时置 0x10 → 过守卫 → 算出 17B（SC+IC+GMAC）→ 立刻还原
+    //   · 打包 APDU 那一刻：security 已回到 NONE → isCiphered()=false → 明文 C3 ✓
+    // 手法出处：官方示例 GuruxDLMSClientExample/src/communication.c 的
+    // com_updateInvocationCounter —— "先把 settings 存起来，临时改动，做完还原"。
     if (c->settings.authentication > DLMS_AUTHENTICATION_LOW)
     {
         reply_init(&reply);
         mes_init(&msg);
-        c->lastStep = DLMS_STEP_HLS_REQUEST;
-        ret = cl_getApplicationAssociationRequest(&c->settings, &msg);
+        DLMS_SECURITY savedSecurity = c->settings.cipher.security;
+
+        // ① 算 GMAC：只在这一刻临时置 0x10，仅为过 ciphering.c:681 的守卫。
+        gxByteBuffer challenge;
+        bb_init(&challenge);
+        c->settings.cipher.security = DLMS_SECURITY_AUTHENTICATION;
+        int r1 = dlms_secure(&c->settings,
+                             (int32_t)c->settings.cipher.invocationCounter,
+                             &c->settings.stoCChallenge,            // 服务端挑战（AARE 里 AA 12 80 10 …）
+                             &c->settings.cipher.systemTitle,       // GMAC 的 secret = 客户端自己的 SystemTitle
+                             &challenge);                           // → SC(0x10|suite) + IC(4B) + GMAC(12B) = 17B
+        c->settings.cipher.security = savedSecurity;                 // ★ 立刻还原：打包前 security 已回 NONE
+
+        if (r1 != 0)
+        {
+            c->lastStep = DLMS_STEP_HLS_REQUEST;
+            ret = r1;
+        }
+        else
+        {
+            // ② 打包：此时 security 已是 NONE → isCiphered()=false → 明文 C3，不是 CB。
+            //    逐字段应等于现场 .NET 成功报文：
+            //    C3 01 C1 00 0F 00 00 28 00 00 FF 01 09 11 10 <IC:4B> <GMAC:12B>
+            dlmsVARIANT data;
+            var_init(&data);
+            data.vt = DLMS_DATA_TYPE_OCTET_STRING;
+            data.byteArr = &challenge;
+            static const unsigned char LN[6] = { 0, 0, 40, 0, 0, 255 };
+            c->lastStep = DLMS_STEP_HLS_REQUEST;
+            ret = cl_methodLN(&c->settings, LN,
+                              DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME,
+                              1, &data, &msg);
+            var_clear(&data);
+            bb_clear(&challenge);
+        }
+
         if (ret == DLMS_ERROR_CODE_OK)
         {
             c->lastStep = DLMS_STEP_HLS_RESPONSE;
@@ -477,7 +526,11 @@ int dlms_initialize(dlmsCtx* c)
         }
         if (ret == DLMS_ERROR_CODE_OK)
         {
+            // ③ 解析服务端回的 HLS 应答确认：parse 内部也会调 dlms_secure，
+            //    同样需要 0x10 窗口（此路径无出向 APDU，安全）。
+            c->settings.cipher.security = DLMS_SECURITY_AUTHENTICATION;
             ret = cl_parseApplicationAssociationResponse(&c->settings, &reply.data);
+            c->settings.cipher.security = savedSecurity;
         }
         mes_clear(&msg);
         reply_clear(&reply);
