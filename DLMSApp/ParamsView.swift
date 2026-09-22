@@ -35,6 +35,28 @@ struct ParamsView: View {
                 TextField("4059", value: $store.config.port, format: .number)
                     .keyboardType(.numberPad).multilineTextAlignment(.trailing)
             }
+            // 最近连接：点一下就回填上面的 IP + 端口（只在连接成功时才会被记入）。
+            if !store.config.recentEndpoints.isEmpty {
+                Menu {
+                    ForEach(store.config.recentEndpoints, id: \.self) { ep in
+                        Button(ep) {
+                            if let (host, prt) = ConnectionConfig.splitEndpoint(ep) {
+                                store.config.ip = host
+                                store.config.port = prt
+                            }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text("最近连接")
+                        Spacer()
+                        Text(store.config.recentEndpoints.first ?? "")
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
             HStack {
                 Text("接收超时(ms)")
                 Spacer()

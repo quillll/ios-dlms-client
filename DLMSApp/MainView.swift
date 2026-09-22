@@ -337,7 +337,11 @@ struct MainView: View {
             } },
             onFinish: { value, err in DispatchQueue.main.async {
                 // 结果与状态分开走：不再靠"完成 · "前缀从状态文本里拆值
-                if let value { store.parsedText = value }
+                if let value {
+                    store.parsedText = value
+                    // 连上了才记入"最近连接"（参数页下拉用）；失败的地址不进列表。
+                    store.config.rememberEndpoint()
+                }
                 // 注意：第一个参数是 LogEntry.Kind（只有 info/tx/rx）；
                 // 错误级别走 level: —— `error` 是 LogEntry.Level 的成员，别传错位置。
                 if let err { store.log(.info, err, level: .error) }

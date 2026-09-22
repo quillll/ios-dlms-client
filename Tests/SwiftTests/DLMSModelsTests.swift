@@ -101,6 +101,56 @@ final class ServerAddressEncodingTests: XCTestCase {
     }
 }
 
+/// 最近连接（IP:端口）列表：记录、去重、限量、回填解析。
+final class RecentEndpointTests: XCTestCase {
+    func testRememberPutsNewestFirst() {
+        var c = ConnectionConfig()
+        c.ip = "192.168.1.10"; c.port = 4059
+        c.rememberEndpoint()
+        c.ip = "10.0.0.5"; c.port = 4059
+        c.rememberEndpoint()
+        XCTAssertEqual(c.recentEndpoints.first, "10.0.0.5:4059")
+        XCTAssertEqual(c.recentEndpoints.count, 2)
+    }
+
+    func testRememberDeduplicates() {
+        var c = ConnectionConfig()
+        c.ip = "192.168.1.10"; c.port = 4059
+        c.rememberEndpoint()
+        c.ip = "10.0.0.5"; c.port = 4059
+        c.rememberEndpoint()
+        c.ip = "192.168.1.10"; c.port = 4059
+        c.rememberEndpoint()                       // 回到第一条 → 应移到最前且不重复
+        XCTAssertEqual(c.recentEndpoints, ["192.168.1.10:4059", "10.0.0.5:4059"])
+    }
+
+    func testRememberCapsAtEight() {
+        var c = ConnectionConfig()
+        for i in 1...10 {
+            c.ip = "10.0.0.\(i)"; c.port = 4059
+            c.rememberEndpoint()
+        }
+        XCTAssertEqual(c.recentEndpoints.count, 8)
+        XCTAssertEqual(c.recentEndpoints.first, "10.0.0.10:4059")
+    }
+
+    func testRememberIgnoresEmptyHost() {
+        var c = ConnectionConfig()
+        c.ip = "   "; c.port = 4059
+        c.rememberEndpoint()
+        XCTAssertTrue(c.recentEndpoints.isEmpty)
+    }
+
+    func testSplitEndpoint() {
+        let ok = ConnectionConfig.splitEndpoint("192.168.1.10:4059")
+        XCTAssertEqual(ok?.0, "192.168.1.10")
+        XCTAssertEqual(ok?.1, 4059)
+        XCTAssertNil(ConnectionConfig.splitEndpoint("192.168.1.10"))     // 没端口
+        XCTAssertNil(ConnectionConfig.splitEndpoint("host:abc"))          // 端口非数字
+        XCTAssertNil(ConnectionConfig.splitEndpoint(":4059"))             // 空主机
+    }
+}
+
 final class EnumTests: XCTestCase {
     func testAuthRawValues() {
         XCTAssertEqual(Auth.none.rawValue, 0)

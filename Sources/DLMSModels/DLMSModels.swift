@@ -151,6 +151,31 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     var serverAddressWidth: Int = 4
     var wrapperSource: UInt32 = 0x01
     var wrapperTarget: UInt32 = 0x01
+
+    /// 最近成功连接过的 `IP:端口`（新的在前，最多 8 条）。参数页下拉选择用。
+    /// 只在**连接成功**时记录（见 MainView 的 onFinish），避免把打错的地址记进去。
+    var recentEndpoints: [String] = []
+
+    /// 记住当前 `IP:端口`：去重、新的在前、最多 8 条。
+    /// 用 Swift 的 split 按最后一个冒号切分（IPv6 字面量也能容忍）。
+    mutating func rememberEndpoint() {
+        let host = ip.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else { return }
+        let key = "\(host):\(port)"
+        var list = recentEndpoints.filter { $0 != key }
+        list.insert(key, at: 0)
+        if list.count > 8 { list = Array(list.prefix(8)) }
+        recentEndpoints = list
+    }
+
+    /// 把一条 `IP:端口` 拆回 ip / port（供下拉选择时回填）。
+    static func splitEndpoint(_ s: String) -> (String, Int)? {
+        guard let idx = s.lastIndex(of: ":") else { return nil }
+        let host = String(s[s.startIndex..<idx])
+        let portStr = String(s[s.index(after: idx)...])
+        guard !host.isEmpty, let p = Int(portStr) else { return nil }
+        return (host, p)
+    }
     var auth: Auth = .highGMAC                  // 认证默认 HLS-GMAC
     var security: SecurityMode = .none          // 信息加密默认 NONE
     var passwordHex: String = "00000000"        // LLS 密码（按 ASCII 直传给 cl_init）
@@ -183,6 +208,7 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         serverAddressWidth = c.dlmsValue(.serverAddressWidth, serverAddressWidth)
         wrapperSource = c.dlmsValue(.wrapperSource, wrapperSource)
         wrapperTarget = c.dlmsValue(.wrapperTarget, wrapperTarget)
+        recentEndpoints = c.dlmsValue(.recentEndpoints, recentEndpoints)
         auth = c.dlmsValue(.auth, auth)
         security = c.dlmsValue(.security, security)
         passwordHex = c.dlmsValue(.passwordHex, passwordHex)
