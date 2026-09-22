@@ -271,6 +271,85 @@ static void test_initialize_replay(void)
     (void)ret;
 }
 
+// 渲染函数在桥接层故意不加 static（见 DLMSBridge.c 里的说明），这里直接声明使用。
+// 生产路径是 dlms_read/dlms_write/dlms_method → replyValueString → dlms_renderValue。
+int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen);
+
+// 渲染断言：只检查"整块输出里包含某段子串"，不把排版写死进测试。
+// 注意：构造 byteArr 时**绝不调用 var_clear**（它只借用栈上的 gxByteBuffer，
+// 释放会非法 free —— 这正是真机崩溃的那个坑）。
+static void test_render(void)
+{
+    dlmsVARIANT v;
+    char buf[512];
+    int len;
+
+    // UINT16 = 1234 → HEX 应为大端 04 D2
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_UINT16;
+    v.uiVal = 1234;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: UINT16 渲染成功");
+    CHECK(strstr(buf, "long-unsigned") != NULL, "render: 类型名 long-unsigned");
+    CHECK(strstr(buf, "04 D2") != NULL, "render: UINT16=1234 → HEX 04 D2");
+
+    // BOOLEAN = 1 → 可读 true
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_BOOLEAN;
+    v.boolVal = 1;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: BOOLEAN 渲染成功");
+    CHECK(strstr(buf, "true") != NULL, "render: BOOLEAN=1 → true");
+
+    // INT8 = -1 → HEX 应为 FF（验符号/宽度处理）
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_INT8;
+    v.cVal = -1;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: INT8 渲染成功");
+    CHECK(strstr(buf, "FF") != NULL, "render: INT8=-1 → HEX FF");
+
+    // OCTET_STRING = "ABC12345" → 可读直接给 ASCII 文本
+    {
+        static unsigned char ascii[] = { 0x41, 0x42, 0x43, 0x31, 0x32, 0x33, 0x34, 0x35 };
+        gxByteBuffer bb;
+        bb_init(&bb);
+        bb_set(&bb, ascii, (uint32_t)sizeof(ascii));
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_OCTET_STRING;
+        v.byteArr = &bb;
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: octet-string(文本) 渲染成功");
+        CHECK(strstr(buf, "ABC12345") != NULL, "render: octet-string → 可读给 ASCII");
+        bb_clear(&bb);
+    }
+
+    // OCTET_STRING = {00 01 FF} → 不可打印，提示看 HEX，且 HEX 逐字节
+    {
+        static unsigned char raw[] = { 0x00, 0x01, 0xFF };
+        gxByteBuffer bb;
+        bb_init(&bb);
+        bb_set(&bb, raw, (uint32_t)sizeof(raw));
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_OCTET_STRING;
+        v.byteArr = &bb;
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: octet-string(二进制) 渲染成功");
+        CHECK(strstr(buf, "（非文本，见 HEX）") != NULL, "render: 非文本 → 提示见 HEX");
+        CHECK(strstr(buf, "00 01 FF") != NULL, "render: 二进制 HEX 逐字节");
+        bb_clear(&bb);
+    }
+
+    // 空指针与零容量应安全返回 0（不崩）
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(NULL, buf, &len) == 0, "render: value=NULL 安全");
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_UINT8;
+    v.bVal = 7;
+    len = 0;
+    CHECK(dlms_renderValue(&v, buf, &len) == 0, "render: cap=0 安全");
+}
+
 int main(void)
 {
     // 关掉 stdout 缓冲：万一后面崩溃，已打印的内容才不会跟着丢掉（排查用）。
@@ -278,6 +357,7 @@ int main(void)
     printf("[hex]\n"); test_hex();
     printf("[ctx]\n"); test_ctx();
     printf("[variant]\n"); test_variant();
+    printf("[render]\n"); test_render();
     // ⚠️ 回放测试当前会崩溃（正在排查：是 HLS 修复仍不稳，还是库在该路径下有问题）。
     // 默认不跑，避免弄红 CI；需要时用 DLMS_TEST_REPLAY=1 手动启用：
     //   DLMS_TEST_REPLAY=1 ./test_dlms

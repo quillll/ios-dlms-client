@@ -609,7 +609,10 @@ static void appendReadable(dlmsVARIANT* v, gxByteBuffer* bb)
         bbAppendStr(bb, v->boolVal ? "true" : "false");
         return;
     case DLMS_DATA_TYPE_OCTET_STRING:
-        if (v->byteArr != NULL && v->byteArr->size > 0)
+        if (v->byteArr == NULL || v->byteArr->size == 0)
+        {
+            return;      // 空值：可读留空，别误导成"非文本"
+        }
         {
             uint32_t i;
             int printable = 1;
@@ -693,44 +696,53 @@ static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb)
     }
 }
 
-// 从 reply 取出值，渲染成多行文本写入 out（UI 的"解析"面板直接显示）：
+// 把 1 个值渲染成多行文本（UI 的"解析"面板直接显示）：
 //   类型   long-unsigned (18)
 //   值     1234
 //   可读   1234
 //   HEX    04 D2
-static int replyValueString(gxReplyData* reply, char* out, int* outLen)
+//
+// **故意不加 static**：让 C 单测能直接构造 dlmsVARIANT 断言渲染结果
+//（见 Tests/CTests/test_dlms.c 的 [render] 段）。生产路径由下面的
+// replyValueString() 调用，不对外暴露到 DLMSCore.h（避免 Swift 侧多看到 C 类型）。
+int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen)
 {
     int written = 0;
-    if (out != NULL && outLen != NULL && *outLen > 0)
+    if (value == NULL || out == NULL || outLen == NULL || *outLen <= 0)
+    {
+        return 0;
+    }
     {
         gxByteBuffer bb;
         char* s;
         bb_init(&bb);
 
         bbAppendStr(&bb, "类型   ");
-        bbAppendStr(&bb, dlms_dataTypeName((int)reply->dataValue.vt));
+        bbAppendStr(&bb, dlms_dataTypeName((int)value->vt));
         {
             char tmp[24];
-            snprintf(tmp, sizeof(tmp), " (%d)\n", (int)reply->dataValue.vt);
+            snprintf(tmp, sizeof(tmp), " (%d)\n", (int)value->vt);
             bbAppendStr(&bb, tmp);
         }
 
         bbAppendStr(&bb, "值     ");
-        if (var_toString(&reply->dataValue, &bb) != 0)
+        if (var_toString(value, &bb) != 0)
         {
             bbAppendStr(&bb, "(无法转换)");
         }
         bbAppendStr(&bb, "\n");
 
         bbAppendStr(&bb, "可读   ");
-        appendReadable(&reply->dataValue, &bb);
+        appendReadable(value, &bb);
         bbAppendStr(&bb, "\n");
 
         bbAppendStr(&bb, "HEX    ");
-        appendHex(&reply->dataValue, &bb);
+        appendHex(value, &bb);
         bbAppendStr(&bb, "\n");
 
-        bb_setUInt8(&bb, 0);          // 收尾 NUL（bb_setUInt8 只加一字节）
+        bb_setUInt8(&bb, 0);          // 收尾 NUL：bb_toString 要求缓冲区以 0 结尾
+        // 注意：bb_toString 返回的是**新 malloc 出来的副本**，所以下面必须 free(s)；
+        // 若将来改成直接用 (char*)bb.data（更直接），则**必须同时删掉 free**，否则非法释放。
         s = bb_toString(&bb);
         if (s != NULL)
         {
@@ -746,6 +758,11 @@ static int replyValueString(gxReplyData* reply, char* out, int* outLen)
         *outLen = written;
     }
     return written;
+}
+
+static int replyValueString(gxReplyData* reply, char* out, int* outLen)
+{
+    return dlms_renderValue(&reply->dataValue, out, outLen);
 }
 
 int dlms_read(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned char attr,
