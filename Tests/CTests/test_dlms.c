@@ -59,6 +59,13 @@ static void test_ctx(void)
     CHECK(dlms_step_name(5)[0] != '\0', "diag: step_name(5) non-empty");
     CHECK(dlms_lastStep(NULL) == 0 && dlms_sendFailed(NULL) == 0, "diag: NULL-safe");
 
+    // 读数展示：类型名表（必须与 enums.h 的 DLMS_DATA_TYPE_* 一致）
+    CHECK(strcmp(dlms_dataTypeName(18), "long-unsigned") == 0, "render: type 18 = long-unsigned");
+    CHECK(strcmp(dlms_dataTypeName(9), "octet-string") == 0, "render: type 9 = octet-string");
+    CHECK(strcmp(dlms_dataTypeName(25), "date-time") == 0, "render: type 25 = date-time");
+    CHECK(strcmp(dlms_dataTypeName(3), "boolean") == 0, "render: type 3 = boolean");
+    CHECK(strcmp(dlms_dataTypeName(999), "unknown") == 0, "render: 未知类型 → unknown");
+
     dlms_free(c);
 }
 

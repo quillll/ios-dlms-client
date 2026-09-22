@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 
 // The DLMS library requires the application to supply the current time.
 void time_now(gxtime* value)
@@ -546,27 +547,200 @@ int dlms_initialize(dlmsCtx* c)
     return DLMS_ERROR_CODE_OK;
 }
 
-// 从 reply 取出值字符串写入 out。
+// ── 读数展示（v1.6）：类型 / 值 / 可读 / HEX ─────────────────────────────
+// 起因：原来只输出 var_toString 的"值"，看不出数据类型、也不好读。
+// 类型名按 enums.h 的 DLMS_DATA_TYPE_* 逐项列出（不猜名字）。
+const char* dlms_dataTypeName(int dataType)
+{
+    switch (dataType)
+    {
+    case DLMS_DATA_TYPE_NONE:                 return "none";
+    case DLMS_DATA_TYPE_ARRAY:                return "array";
+    case DLMS_DATA_TYPE_STRUCTURE:            return "structure";
+    case DLMS_DATA_TYPE_BOOLEAN:              return "boolean";
+    case DLMS_DATA_TYPE_BIT_STRING:           return "bit-string";
+    case DLMS_DATA_TYPE_INT32:                return "long";
+    case DLMS_DATA_TYPE_UINT32:               return "long-unsigned";
+    case DLMS_DATA_TYPE_OCTET_STRING:         return "octet-string";
+    case DLMS_DATA_TYPE_STRING:               return "visible-string";
+    case DLMS_DATA_TYPE_STRING_UTF8:          return "utf8-string";
+    case DLMS_DATA_TYPE_BINARY_CODED_DESIMAL: return "bcd";
+    case DLMS_DATA_TYPE_INT8:                 return "integer";
+    case DLMS_DATA_TYPE_INT16:                return "long";
+    case DLMS_DATA_TYPE_UINT8:                return "unsigned";
+    case DLMS_DATA_TYPE_UINT16:               return "long-unsigned";
+    case DLMS_DATA_TYPE_COMPACT_ARRAY:        return "compact-array";
+    case DLMS_DATA_TYPE_INT64:                return "long64";
+    case DLMS_DATA_TYPE_UINT64:               return "long64-unsigned";
+    case DLMS_DATA_TYPE_ENUM:                 return "enum";
+    case DLMS_DATA_TYPE_FLOAT32:              return "float32";
+    case DLMS_DATA_TYPE_FLOAT64:              return "float64";
+    case DLMS_DATA_TYPE_DATETIME:             return "date-time";
+    case DLMS_DATA_TYPE_DATE:                 return "date";
+    case DLMS_DATA_TYPE_TIME:                 return "time";
+    case DLMS_DATA_TYPE_DELTA_INT8:           return "delta-integer";
+    case DLMS_DATA_TYPE_DELTA_INT16:          return "delta-long";
+    case DLMS_DATA_TYPE_DELTA_INT32:          return "delta-long";
+    case DLMS_DATA_TYPE_DELTA_UINT8:          return "delta-unsigned";
+    case DLMS_DATA_TYPE_DELTA_UINT16:         return "delta-long-unsigned";
+    case DLMS_DATA_TYPE_DELTA_UINT32:         return "delta-long-unsigned";
+    default:                                  return "unknown";
+    }
+}
+
+static void bbAppendStr(gxByteBuffer* bb, const char* s)
+{
+    if (s != NULL)
+    {
+        bb_set(bb, (const unsigned char*)s, (uint32_t)strlen(s));
+    }
+}
+
+// 可读渲染：
+//   boolean → true/false
+//   octet-string → 全可打印则按 ASCII 文本（如序列号），否则提示看 HEX
+//   visible-string / utf8-string → 直接文本
+//   其它（数值、时间、复合类型）→ 交给 var_toString（它本身就会给出可读表示）
+static void appendReadable(dlmsVARIANT* v, gxByteBuffer* bb)
+{
+    switch (v->vt)
+    {
+    case DLMS_DATA_TYPE_BOOLEAN:
+        bbAppendStr(bb, v->boolVal ? "true" : "false");
+        return;
+    case DLMS_DATA_TYPE_OCTET_STRING:
+        if (v->byteArr != NULL && v->byteArr->size > 0)
+        {
+            uint32_t i;
+            int printable = 1;
+            for (i = 0; i < v->byteArr->size; i++)
+            {
+                unsigned char ch = v->byteArr->data[i];
+                if (ch < 0x20 || ch > 0x7E) { printable = 0; break; }
+            }
+            if (printable)
+            {
+                bb_set(bb, v->byteArr->data, v->byteArr->size);
+                return;
+            }
+        }
+        bbAppendStr(bb, "（非文本，见 HEX）");
+        return;
+    case DLMS_DATA_TYPE_STRING:
+    case DLMS_DATA_TYPE_STRING_UTF8:
+    {
+        gxByteBuffer* s = (v->vt == DLMS_DATA_TYPE_STRING) ? v->strVal : v->strUtfVal;
+        if (s != NULL && s->size > 0)
+        {
+            bb_set(bb, s->data, s->size);
+            return;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    if (var_toString(v, bb) != 0)
+    {
+        bbAppendStr(bb, "(无法渲染)");
+    }
+}
+
+// 原始字节：整数按大端对齐到其宽度；octet-string 逐字节（最多 32 个）；其余不算。
+static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb)
+{
+    unsigned char tmp[8];
+    uint64_t u = 0;
+    int n = 0, i;
+    switch (v->vt)
+    {
+    case DLMS_DATA_TYPE_UINT8:
+    case DLMS_DATA_TYPE_ENUM:   u = (uint64_t)v->bVal;                      n = 1; break;
+    case DLMS_DATA_TYPE_INT8:   u = (uint64_t)(uint8_t)v->cVal;             n = 1; break;
+    case DLMS_DATA_TYPE_UINT16: u = (uint64_t)v->uiVal;                     n = 2; break;
+    case DLMS_DATA_TYPE_INT16:  u = (uint64_t)(uint16_t)v->iVal;            n = 2; break;
+    case DLMS_DATA_TYPE_UINT32: u = (uint64_t)v->ulVal;                     n = 4; break;
+    case DLMS_DATA_TYPE_INT32:  u = (uint64_t)(uint32_t)v->lVal;            n = 4; break;
+    case DLMS_DATA_TYPE_UINT64: u = v->ullVal;                              n = 8; break;
+    case DLMS_DATA_TYPE_INT64:  u = (uint64_t)v->llVal;                     n = 8; break;
+    case DLMS_DATA_TYPE_OCTET_STRING:
+        if (v->byteArr != NULL && v->byteArr->size > 0)
+        {
+            uint32_t k, lim = v->byteArr->size < 32 ? v->byteArr->size : 32;
+            char hx[4];
+            for (k = 0; k < lim; k++)
+            {
+                if (k > 0) { bbAppendStr(bb, " "); }
+                snprintf(hx, sizeof(hx), "%02X", v->byteArr->data[k]);
+                bbAppendStr(bb, hx);
+            }
+            if (v->byteArr->size > lim) { bbAppendStr(bb, " …"); }
+            return;
+        }
+        bbAppendStr(bb, "-");
+        return;
+    default:
+        bbAppendStr(bb, "-");
+        return;
+    }
+    for (i = 0; i < n; i++)
+    {
+        char hx[4];
+        tmp[i] = (unsigned char)((u >> (8 * (n - 1 - i))) & 0xFF);
+        snprintf(hx, sizeof(hx), "%02X", tmp[i]);
+        if (i > 0) { bbAppendStr(bb, " "); }
+        bbAppendStr(bb, hx);
+    }
+}
+
+// 从 reply 取出值，渲染成多行文本写入 out（UI 的"解析"面板直接显示）：
+//   类型   long-unsigned (18)
+//   值     1234
+//   可读   1234
+//   HEX    04 D2
 static int replyValueString(gxReplyData* reply, char* out, int* outLen)
 {
     int written = 0;
     if (out != NULL && outLen != NULL && *outLen > 0)
     {
         gxByteBuffer bb;
+        char* s;
         bb_init(&bb);
-        if (var_toString(&reply->dataValue, &bb) == 0)
+
+        bbAppendStr(&bb, "类型   ");
+        bbAppendStr(&bb, dlms_dataTypeName((int)reply->dataValue.vt));
         {
-            char* s = bb_toString(&bb);
-            if (s != NULL)
-            {
-                int cap = *outLen;
-                size_t need = strlen(s);
-                int n = need < (size_t)(cap - 1) ? (int)need : (cap - 1);
-                memcpy(out, s, (size_t)n);
-                out[n] = '\0';
-                written = n + 1;
-                free(s);
-            }
+            char tmp[24];
+            snprintf(tmp, sizeof(tmp), " (%d)\n", (int)reply->dataValue.vt);
+            bbAppendStr(&bb, tmp);
+        }
+
+        bbAppendStr(&bb, "值     ");
+        if (var_toString(&reply->dataValue, &bb) != 0)
+        {
+            bbAppendStr(&bb, "(无法转换)");
+        }
+        bbAppendStr(&bb, "\n");
+
+        bbAppendStr(&bb, "可读   ");
+        appendReadable(&reply->dataValue, &bb);
+        bbAppendStr(&bb, "\n");
+
+        bbAppendStr(&bb, "HEX    ");
+        appendHex(&reply->dataValue, &bb);
+        bbAppendStr(&bb, "\n");
+
+        bb_setUInt8(&bb, 0);          // 收尾 NUL（bb_setUInt8 只加一字节）
+        s = bb_toString(&bb);
+        if (s != NULL)
+        {
+            int cap = *outLen;
+            size_t need = strlen(s);
+            int n = need < (size_t)(cap - 1) ? (int)need : (cap - 1);
+            memcpy(out, s, (size_t)n);
+            out[n] = '\0';
+            written = n + 1;
+            free(s);
         }
         bb_clear(&bb);
         *outLen = written;

@@ -106,6 +106,10 @@ int dlms_lastStep(dlmsCtx* ctx);
 int dlms_sendFailed(dlmsCtx* ctx);
 const char* dlms_step_name(int step);
 
+// 读数展示：DLMS_DATA_TYPE 值 → 可读类型名（静态字符串）。
+// 单独暴露是为了让 C 单测能直接断言类型名表（防止改名/漏项悄悄发生）。
+const char* dlms_dataTypeName(int dataType);
+
 #ifdef __cplusplus
 }
 #endif
