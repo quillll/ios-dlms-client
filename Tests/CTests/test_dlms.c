@@ -327,6 +327,14 @@ int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen);
 // 渲染断言：只检查"整块输出里包含某段子串"，不把排版写死进测试。
 // 注意：构造 byteArr 时**绝不调用 var_clear**（它只借用栈上的 gxByteBuffer，
 // 释放会非法 free —— 这正是真机崩溃的那个坑）。
+// 统计字符出现次数（用于"恰好两行"这类行数契约断言）
+static int countChar(const char* s, char c)
+{
+    int n = 0;
+    for (; *s != '\0'; ++s) { if (*s == c) { ++n; } }
+    return n;
+}
+
 static void test_render(void)
 {
     dlmsVARIANT v;
@@ -384,7 +392,7 @@ static void test_render(void)
         v.byteArr = &bb;
         len = (int)sizeof(buf);
         CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: octet-string(二进制) 渲染成功");
-        CHECK(strstr(buf, "（非文本，见 HEX）") != NULL, "render: 非文本 → 提示见 HEX");
+        CHECK(strstr(buf, "（非文本）") != NULL, "render: 非文本 → 提示（非文本）");
         CHECK(strstr(buf, "00 01 FF") != NULL, "render: 二进制 HEX 逐字节");
         bb_clear(&bb);
     }
@@ -433,6 +441,73 @@ static void test_render(void)
     CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: boolean 渲染成功");
     CHECK(strstr(buf, "03 01") != NULL, "render2: 行1 = 03 01");
     CHECK(strstr(buf, "Value: true") != NULL, "render2: 行2 值 true");
+
+    //   行数契约：**恰好两行**（将来多加/少加一行都必须被发现）
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_UINT16;
+    v.uiVal = 0x1234;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: uint16 渲染成功");
+    CHECK(countChar(buf, '\n') == 2, "render2: 恰好两行");
+    CHECK(strstr(buf, "12 12 34") != NULL, "render2: 行1 = 12 12 34");
+    CHECK(strstr(buf, "-> Type: long-unsigned, Value: ") != NULL,
+          "render2: 行2 结构 = -> Type: <名>, Value: <值>（定长类型无 Length）");
+
+    // visible-string：0x0A。注意 DLMS 里 0x09 是 octet-string，0x0A 才是 visible-string
+    {
+        static unsigned char vs[] = { 0x41, 0x42, 0x43 };      // "ABC"
+        gxByteBuffer sb;
+        bb_init(&sb);
+        bb_set(&sb, vs, (uint32_t)sizeof(vs));
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_STRING;
+        v.strVal = &sb;                        // 栈缓冲：绝不 var_clear
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: visible-string 渲染成功");
+        CHECK(strstr(buf, "0A 03 41 42 43") != NULL, "render2: 行1 = 0A 03 41 42 43");
+        CHECK(strstr(buf, "Value: ABC") != NULL, "render2: 行2 值 ABC");
+        bb_clear(&sb);
+    }
+
+    // bit-string：bitArr.size 是**位数**（8 位 → 长度字节应为 01，不是 08）
+    {
+        static unsigned char bs[] = { 0x88 };
+        bitArray ba;
+        ba.data = bs; ba.capacity = 1; ba.size = 8; ba.position = 0;
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_BIT_STRING;
+        v.bitArr = &ba;
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: bit-string 渲染成功");
+        CHECK(strstr(buf, "04 01 88") != NULL, "render2: 行1 = 04 01 88（长度按字节数）");
+    }
+
+    // 空 octet-string：编码就是 `09 00`
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_OCTET_STRING;
+    v.byteArr = NULL;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: 空 octet-string 渲染成功");
+    CHECK(strstr(buf, "09 00") != NULL, "render2: 空 octet-string 行1 = 09 00");
+
+    // 长度 ≥128 时的 A-XDR 变长编码：128 字节 → `09 81 80`
+    //（旧实现写死 1 字节 + len & 0xFF，128 会显示成 80、256 直接变 00）
+    {
+        static unsigned char big[128];
+        gxByteBuffer bb;
+        int k;
+        for (k = 0; k < 128; k++) { big[k] = 0x41; }        // 'A' × 128
+        bb_init(&bb);
+        bb_set(&bb, big, (uint32_t)sizeof(big));
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_OCTET_STRING;
+        v.byteArr = &bb;                   // 栈缓冲：不 var_clear
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: 128 字节 octet-string 渲染成功");
+        CHECK(strstr(buf, "09 81 80") != NULL, "render2: ≥128 长度用多字节编码（09 81 80）");
+        CHECK(strstr(buf, "Length: 128") != NULL, "render2: 行2 Length = 128");
+        bb_clear(&bb);
+    }
 }
 
 // ── 写 / action 路径的 variant 构造 ────────────────────────────────────────────

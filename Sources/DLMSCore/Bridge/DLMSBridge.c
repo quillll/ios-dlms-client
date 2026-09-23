@@ -680,7 +680,8 @@ static void appendReadable(dlmsVARIANT* v, gxByteBuffer* bb)
                 return;
             }
         }
-        bbAppendStr(bb, "（非文本，见 HEX）");
+        // 新格式下行1 就是 HEX，这里再写"见 HEX"会含糊
+        bbAppendStr(bb, "（非文本）");
         return;
     case DLMS_DATA_TYPE_STRING:
     case DLMS_DATA_TYPE_STRING_UTF8:
@@ -787,13 +788,56 @@ static const unsigned char* lengthPrefixedBytes(dlmsVARIANT* v, uint32_t* len)
         if (v->strUtfVal != NULL) { *len = v->strUtfVal->size; return v->strUtfVal->data; }
         return NULL;
     }
+    if (v->vt == DLMS_DATA_TYPE_BIT_STRING)
+    {
+        // ⚠️ bitArray.size 是**位数**（bitarray.h:47-53），而编码里的长度是**字节数**。
+        //    原来这里漏了 bit-string 分支 → 变长分支取不到数据，行1 会输出 `04 00`（假长度）。
+        if (v->bitArr != NULL)
+        {
+            *len = (uint32_t)((v->bitArr->size + 7) / 8);
+            return v->bitArr->data;
+        }
+        return NULL;
+    }
     return NULL;
+}
+
+// A-XDR 的变长长度编码：
+//   < 0x80      → 1 字节
+//   ≤ 0xFF      → 0x81 + 1 字节
+//   ≤ 0xFFFF    → 0x82 + 2 字节（大端）
+//   否则        → 0x83 + 3 字节
+// 之前写死"1 字节 + len & 0xFF"：>255 会**截断成 0**（256 字节的字符串看起来像空的），
+// 128~255 也与真表字节不符 —— 而"拿显示的 HEX 去和表对字节"正是这个面板的用途。
+static void appendLengthPrefixedLen(uint32_t len, gxByteBuffer* bb)
+{
+    char seg[20];
+    if (len < 0x80)
+    {
+        snprintf(seg, sizeof(seg), " %02X", (int)len);
+    }
+    else if (len <= 0xFF)
+    {
+        snprintf(seg, sizeof(seg), " %02X %02X", 0x81, (int)len);
+    }
+    else if (len <= 0xFFFF)
+    {
+        snprintf(seg, sizeof(seg), " %02X %02X %02X", 0x82, (int)((len >> 8) & 0xFF), (int)(len & 0xFF));
+    }
+    else
+    {
+        snprintf(seg, sizeof(seg), " %02X %02X %02X %02X", 0x83,
+                 (int)((len >> 16) & 0xFF), (int)((len >> 8) & 0xFF), (int)(len & 0xFF));
+    }
+    bbAppendStr(bb, seg);
 }
 
 // 第一行：**含类型标签**的 HEX。规则按现场报文习惯：
 //   · 变长类型：tag + 长度 + 内容        例 09 03 31 32 33（octet-string "123"）
 //   · 定长类型：tag + 内容（大端对齐）   例 05 00 00 00 01 / 12 12 34 / 11 01
-//   · 复合/未知类型：只能给 tag（variant 里没有原始编码，无法回推）
+//   · 复合/未知类型：只能给 tag（variant 里没有原始编码，无法回推）。
+//     同理 **FLOAT32/64、DATE/TIME/DATETIME、DELTA_\*** 也没进 appendHex 的分支表，
+//     这些类型同样只输出 tag —— 不是丢数据，是这里**不做编码回推**，别误以为值丢了。
 static void appendTypedHex(dlmsVARIANT* v, gxByteBuffer* bb)
 {
     char seg[8];
@@ -804,8 +848,7 @@ static void appendTypedHex(dlmsVARIANT* v, gxByteBuffer* bb)
     {
         uint32_t len = 0, i;
         const unsigned char* p = lengthPrefixedBytes(v, &len);
-        snprintf(seg, sizeof(seg), " %02X", (int)(len & 0xFF));
-        bbAppendStr(bb, seg);
+        appendLengthPrefixedLen(len, bb);
         for (i = 0; p != NULL && i < len; i++)
         {
             snprintf(seg, sizeof(seg), " %02X", p[i]);
