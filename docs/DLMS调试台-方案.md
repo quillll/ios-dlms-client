@@ -40,6 +40,7 @@
 | 5 | 二进制报文用肉眼核对 | 用**长度域自校验**（`60 4A`=74、`61 56`=86 都能逐级相加验算），或**把本地代码实际发出的字节打出来** | 连续误判三次 |
 | 6 | 改模型默认值 | 必须 grep 出**所有依赖默认值的构造点** —— 预置清单里「本该显式写 IC 却偷懒用默认值」的条目会被带偏 | 电量/功率被标成 Data(1) |
 | 7 | 改 `Codable` 结构体字段 | 必须同步手写 `init(from:)`，**合成解码对「缺键 + 非 Optional」照样抛错** → 旧 JSON 整份失效、用户数据被静默重置 | R19 / R28 同源 |
+| 8 | 把"只读不写"的旧键放进 `CodingKeys` | **不能** ✗ —— 合成 `encode(to:)` 会为**每一个 case** 去找同名存储属性，找不到就整份不满足 `Encodable`，而报错只落在 struct 声明行（**完全指不到那个 case**）。旧键要另开一个 enum（如 `LegacyKeys`）**只用于解码** | CI 红两次（R32） |
 
 ---
 
@@ -194,9 +195,19 @@
   **通信地址(原始输入串 `serverAddressHex`)**、Wrapper 源/目标、认证、信息加密、
   三密钥(LLS密码/GUAK/GUEK)、客户端 SystemTitle、解析使能、**最近连接 `recentEndpoints`** —— **记住上次**。
   - 解码为**容错式**：`init(from:)` 逐项「缺键/类型不符 → 回退默认值」，字段增删不会让旧 `config.json` 整体失效。**改字段必须同步该 init**。
-  - `CodingKeys` **显式声明**，且保留**已淘汰但必须能读**的旧键做迁移：
-    `serverAddress`(UInt32) → 迁移成 8 位 hex；`serverAddressWidth`(手动宽度) → 读入后忽略；
-    `akekHex` → 旧密钥名。
+  - `CodingKeys` **只列与存储属性一一对应的键**（本项目**风格规定**）。
+    ⚠️ **已淘汰的旧键不要放进去** —— **靠合成 `encode(to:)` 时**，编译器会为**每个 case**
+    找同名存储属性，找不到就整份不满足 `Encodable`，而报错只落在 **struct 声明行**
+    （`type 'ConnectionConfig' does not conform to protocol 'Encodable'`）、**指不到出问题的 case**。
+    本项目 CI 已因此红过两次（先 `serverAddressWidth`，半修后又栽在 `serverAddress`）→ **R32**。
+    严格说：**显式实现了 `encode(to:)`** 时多留一个 case 并不报错（本项目历史上就是这么绕过去的），
+    但那把正确性挂在"必须记得别删掉显式 encode"上 —— 删了就立刻炸，
+    所以风格统一走下面这种更稳的做法。
+  - 旧键改走**单独的 `LegacyKeys`**（**只用于解码、不参与编码**）：
+    `serverAddress`(UInt32) → 迁移成 8 位 hex；`serverAddressWidth` 读入后**直接忽略**
+    （已由 `serverAddressHex` 的字节数取代）；`akekHex` 两个 enum 里都没有 —— 未知键本来就会被忽略。
+  - `encode(to:)` 仍是**显式实现**的（只写真实字段）—— 它的本职是"声明会写出哪些键"，
+    与上面那条风格规定互补：即使将来有人往 `CodingKeys` 里加回旧 case，也不会被写进 `config.json`。
   - ⚠️ 要区分「**键不存在**」与「**键存在但为空串**」：后者是用户清空了输入框，
     **不能**再当旧存档迁移回来（`serverAddressHex` 走 `decodeIfPresent` 判断键是否存在）。
   - 通信地址的计算属性：`serverAddressNormalized` / `serverAddressBytes` / `serverAddressIsValid` /
@@ -513,6 +524,31 @@ CC=clang bash Tests/CTests/run.sh                          # Linux / macOS（CI 
 > 这类排查**最可靠的手段是"给桩加计数和上限 + 逐句打印 + `setvbuf(stdout, NULL, _IONBF, 0)`"**
 > —— `setvbuf` 必须加，否则进程崩溃会丢掉所有缓冲输出，只能看到一个空结果。
 
+### 10.4 本地静态自查：对付"报错指不到出问题的地方"的一类错误
+
+本机没有 Swift 工具链，所以有一类错误**只能等 CI**；但如果它的判据是**纯文本可判**的，
+就值得写成脚本在本地拦住 —— 尤其是那些"编译器的报错落在别处、指不到真正的问题行"的错误。
+
+**`tools/chk_codingkeys.py`**（本机 / CI 均可跑，纯标准库，退出码 0/1）：
+
+```bash
+python3 tools/chk_codingkeys.py          # 从脚本位置推断仓库根
+python3 tools/chk_codingkeys.py <repo根> # 显式指定
+```
+
+判据：`CodingKeys` 的每个 case 都必须能对应到一个**存储属性**（非 `static`、非计算属性）。
+理由 —— 合成 `Encodable` 会为每个 case 找同名属性，找不到就整份不满足协议，
+而报错**只落在 struct 声明行**（`does not conform to protocol 'Encodable'`）、**完全指不到那个 case**。
+本项目 CI 已因此红过 **两次**（先 `serverAddressWidth`、半修后又栽在 `serverAddress`）→ **R32**。
+
+> 已淘汰、**只读不写**的旧键要另开一个 enum（如 `LegacyKeys`）只用于解码 ——
+> 别的名字不参与合成 Codable，所以那里 case 无对应属性是**故意的**；
+> 脚本**只检查名为 `CodingKeys` 的那个 enum**。
+>
+> 脚本自身也踩过一个坑值得记：解析 `case` 行时**必须逐行做** ——
+> 用单个正则 `case\s+([\w\s,]*)` 时字符类里的 `\s` **含换行**，
+> 会把后面几行连着吞成一次匹配，只取首行就**漏检**（正是它一开始"报 OK"的原因）。
+
 ---
 
 ## 11. 明确不做（P1/P2/P3 之外）
@@ -556,6 +592,7 @@ CC=clang bash Tests/CTests/run.sh                          # Linux / macOS（CI 
 | **R29** | **预读缓冲的两处内存隐患**（审核报告 v2 的 N1/N2）：① `receive` 两处排空 `pending` **都无视 `max`**，而 recv 回调 `copyBytes(to:count:)` 是**无边界检查写入**、C 侧缓冲是固定 `tmp[2048]` 栈数组 → **栈破坏**；② `pending` 无字节上限 | **已修 ✓**（`a71adba`）。① 新增 `takePending(buf:max:)`：按 `max` 截断、**余量留在 pending**；回调再加 `min(cap, d.count)` 兜底。② `pendingLimit = 256KB`（对齐 C 侧 `DLMS_MAX_RX_BYTES`），超限丢最旧。**关键放大器**：`connection.receive` 的 completion **超时后无法取消**（Network.framework 无单次取消 API），而 `dlmsSendFrame` 允许重试 256 轮 → 可累积 N 个挂起 completion，一次排空可达 `256×2048`，**不是报告说的 2×2048** |
 | **R30** | **OBIS 写法差异导致静默匹配失败**：清单里是点分归一形态（`1.0.1.8.0.255`），「最近 OBIS」存的是用户当初的输入原文（可能 `1-0:1.8.0*255`）→ 按原文比较**永远查不到** → 选中后类/属性/请求数据全带不过来；下拉里同一对象还会出现两条 | **已修 ✓**（`8c16bcc`）。新增 `ObisUtil.comparisonKey`（去空白 + 大写 + `- : * ,` → `.`），**匹配与记录两处都走它**。凡涉及 OBIS 的比较/去重一律用它 |
 | **R31** | **测试脚手架 `buildHdlc` 的 HCS 算错**（先用 `0x00` 占位算 HCS、之后才回填长度，而 HDLC 的 **HCS 必须覆盖真实长度字节**）→ 库校验不过**静默跳过该帧** → `reply->complete` 恒为 0 → `dlmsSendFrame` **死循环**（`fail` 在"收到数据"时归零，唯一守卫失效） | **已修 ✓**（`af449aa`）。先定长再算 HCS。**用现场真实 UA 帧独立验证**：`HCS(A0 1E 03 03 73)=CC40` → 线上 `40 CC` ✓ 与抓包一致。生产侧同时加 `DLMS_MAX_RECV_ROUNDS=256` 兜底（防"对端持续吐数据却构不成可接受帧"）|
+| **R32** | **`CodingKeys` 里放了没有对应存储属性的键** → 合成的 `encode(to:)` 为每个 case 找同名属性、找不到就整份不满足 `Encodable`；**报错只落在 struct 声明行，完全指不到那个 case** | **已修 ✓**（`f...`，2026-09-24）。已淘汰、只读不写的旧键移到独立的 `LegacyKeys`（只解码不编码）。**CI 为此红过两次**（先是 `serverAddressWidth`，半修后又栽在 `serverAddress`）；判据已写成脚本 `tools/chk_codingkeys.py` 可在本地/CI 拦住 —— **见 §10.4** |
 
 
 ---
