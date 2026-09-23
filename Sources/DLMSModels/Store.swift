@@ -17,8 +17,26 @@ final class Store: ObservableObject {
     @Published var recentObis: [String] = []
     /// 报文 / 数据日志。
     @Published var logs: [LogEntry] = []
-    /// 最近一次数据解析输出。
-    @Published var parsedText: String = ""
+    /// 数据解析输出（**累积**，每条操作追加一段，直到「清空」）。
+    ///
+    /// 为什么是数组而不是单个字符串：解析面板要像报文面板那样滚动查看历史，
+    /// 且「解析使能」关闭时需**逐段**只取第一行 —— 拼成一整串后就分不清段落边界了。
+    @Published var parseEntries: [String] = []
+    /// 解析历史条数上限（与 logs 同理，防长会话无限增长）。
+    static let parseEntryLimit = 200
+
+    /// 追加一条解析结果（空白串忽略）。
+    func appendParsed(_ block: String) {
+        let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        parseEntries.append(trimmed)
+        if parseEntries.count > Store.parseEntryLimit {
+            parseEntries.removeFirst(parseEntries.count - Store.parseEntryLimit)
+        }
+    }
+
+    /// 清空解析历史（面板右上角「清空」）。
+    func clearParsed() { parseEntries.removeAll() }
     /// 连接状态描述。
     @Published var connectionState: String = "未连接"
 

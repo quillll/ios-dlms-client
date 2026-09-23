@@ -23,11 +23,16 @@ struct MainView: View {
     @State private var requestHex = ""
     @State private var showParams = false
     @State private var panel: Panel = .data
-    @State private var showLogFullScreen = false
+    /// 满屏查看的目标面板（nil = 不显示）。做成可选是为了让解析/报文共用同一个满屏入口。
+    @State private var fullScreenPanel: Panel?
     /// 「最近一条 OBIS」只在首次出现时恢复一次，避免每次回到本页覆盖用户手改的类/属性。
     @State private var didRestoreRecent = false
 
-    enum Panel: String, CaseIterable { case data = "解析"; case log = "报文" }
+    enum Panel: String, CaseIterable, Identifiable {
+        case data = "解析"
+        case log = "报文"
+        var id: String { rawValue }        // 满屏用 fullScreenCover(item:) 需要 Identifiable
+    }
 
     var body: some View {
         NavigationStack {
@@ -192,15 +197,47 @@ struct MainView: View {
 
     // MARK: - 解析 / 报文
 
-    /// 解析面板正文。
-    /// ⚠️ 「解析使能」原先**没有任何地方读取它**（只有两处 Toggle 在写），拨了完全没反应 ——
-    /// 现在真正生效：关闭时只显示第一行（含类型的原始 HEX），不做类型/值解析。
-    private var dataPanelText: String {
-        let raw = store.parsedText
-        guard !raw.isEmpty else { return "（暂无数据）" }
-        guard !store.config.parseEnabled else { return raw }
-        return raw.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init) ?? raw
+    /// 解析面板里**单段**的正文。
+    /// 「解析使能」关闭时只保留该段第一行（含类型的原始 HEX），不做类型/值解析 ——
+    /// 这个开关原先没有任何地方读取（只有两处 Toggle 在写），拨了完全没反应。
+    private func parseBlockText(_ block: String) -> String {
+        guard !store.config.parseEnabled else { return block }
+        return block.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? block
+    }
+
+    /// 解析面板：**累积 + 独立滚动 + 自动跟随到底**（与报文面板同一套做法）。
+    /// 原来只有一个 Text、每次操作整体替换，而且跟着整页一起滚 —— 攒不了历史、
+    /// 新结果落在下方也看不到。`height = nil` 时用于满屏。
+    private func parseList(height: CGFloat?) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if store.parseEntries.isEmpty {
+                        Text("（暂无数据）").font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(Array(store.parseEntries.enumerated()), id: \.offset) { idx, block in
+                        Text(parseBlockText(block))
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.1)))
+                            .id(idx)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(height: height)
+            // 有新结果就自动滚到底（一次操作结束后不再有新内容，此时可自由上翻历史）
+            .onChange(of: store.parseEntries.count) { _ in
+                guard !store.parseEntries.isEmpty else { return }
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo(store.parseEntries.count - 1, anchor: .bottom)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var resultPanel: some View {
@@ -209,24 +246,24 @@ struct MainView: View {
                 .pickerStyle(.segmented)
 
             if panel == .data {
-                panelHeader(clearEnabled: !store.parsedText.isEmpty) {
+                panelHeader(clearEnabled: !store.parseEntries.isEmpty) {
                     HStack(spacing: 6) {
                         Toggle("解析", isOn: $store.config.parseEnabled).labelsHidden()
                         Text("解析使能").font(.caption2).foregroundStyle(.tertiary)
+                        Button { fullScreenPanel = .data } label: {
+                            Label("满屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption2)
+                        }
                     }
                 } clear: {
-                    store.parsedText = ""
+                    store.clearParsed()
                 }
-                Text(dataPanelText)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.1)))
+                parseList(height: 260)
             } else {
                 panelHeader(clearEnabled: !store.logs.isEmpty) {
                     HStack(spacing: 8) {
                         Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
-                        Button { showLogFullScreen = true } label: {
+                        Button { fullScreenPanel = .log } label: {
                             Label("满屏", systemImage: "arrow.up.left.and.arrow.down.right")
                                 .font(.caption2)
                         }
@@ -237,26 +274,32 @@ struct MainView: View {
                 logList
             }
         }
-        // 报文嵌在外层 ScrollView 里，高度被压得很小、也拉不开 —— 给它一个整屏视图看全
-        .fullScreenCover(isPresented: $showLogFullScreen) { logFullScreenView }
+        // 解析/报文都嵌在外层 ScrollView 里，高度被压住、也拉不开 —— 给它们一个整屏入口
+        .fullScreenCover(item: $fullScreenPanel) { p in fullScreenView(p) }
     }
 
-    /// 报文的满屏视图：与内嵌的 logList 共用同一套渲染（含自动跟随）。
-    private var logFullScreenView: some View {
+    /// 解析/报文的满屏视图（复用同一套渲染与自动跟随；高度放开，见 logList 的说明）。
+    private func fullScreenView(_ p: Panel) -> some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                logList
+                if p == .data { parseList(height: nil) } else { logList(height: nil) }
             }
             .padding(.horizontal)
-            .navigationTitle("报文 · \(store.logs.count) 条")
+            .navigationTitle(p == .data ? "解析 · \(store.parseEntries.count) 条"
+                                        : "报文 · \(store.logs.count) 条")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showLogFullScreen = false }
+                    Button("关闭") { fullScreenPanel = nil }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { store.clearLogs() } label: { Label("清空", systemImage: "trash") }
-                        .disabled(store.logs.isEmpty)
+                    if p == .data {
+                        Button { store.clearParsed() } label: { Label("清空", systemImage: "trash") }
+                            .disabled(store.parseEntries.isEmpty)
+                    } else {
+                        Button { store.clearLogs() } label: { Label("清空", systemImage: "trash") }
+                            .disabled(store.logs.isEmpty)
+                    }
                 }
             }
         }
@@ -285,7 +328,12 @@ struct MainView: View {
         return total > 200 ? "共 \(total) 条 · 显示最近 200" : "共 \(total) 条"
     }
 
-    private var logList: some View {
+    private var logList: some View { logList(height: 260) }
+
+    /// `height = nil` 时不加高度约束（满屏用）。
+    /// ⚠️ 内嵌时写死 260pt；满屏时必须放开，否则"满屏"里只有 260pt 高、下面大片空白
+    ///（上一版就是这样，等于满屏没生效）。
+    private func logList(height: CGFloat?) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -303,7 +351,7 @@ struct MainView: View {
             // 攒到 200 行时整页被拉得极长。这里给它「独立滚动 + 固定高度」，
             // 有新报文时自动滚到底。
             // （一次操作结束后不再有新流量，所以此时可以自由向上翻阅历史。）
-            .frame(height: 260)
+            .frame(height: height)
             .onChange(of: store.logs.count) { _ in
                 guard let last = store.logs.last else { return }
                 withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -386,7 +434,7 @@ struct MainView: View {
             onFinish: { value, err in DispatchQueue.main.async {
                 // 结果与状态分开走：不再靠"完成 · "前缀从状态文本里拆值
                 if let value {
-                    store.parsedText = value
+                    store.appendParsed(value)
                     // 连上了才记入"最近连接"（参数页下拉用）；失败的地址不进列表。
                     store.config.rememberEndpoint()
                 }
