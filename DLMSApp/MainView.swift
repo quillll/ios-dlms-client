@@ -125,16 +125,22 @@ struct MainView: View {
         }
     }
 
-    /// 选中一个 OBIS：**同时**把「接口类」与「属性」一起带过去。
+    /// 选中一个 OBIS：**同时**把「接口类」「属性」「请求数据」一起带过去。
     /// 之前只写 currentObis，导致换条 OBIS 后类/属性还是上一条的，读出来就是错的对象。
     /// `recentObis` 只存了 code 字符串，所以按 code 回 OBIS 清单里反查元数据；
-    /// 清单里查不到该 code（例如手输且未入库）时只更新逻辑名，不动类/属性，
+    /// **比较前必须先归一** —— 清单里是点分形态（`1.0.1.8.0.255`），
+    /// 而最近列表可能是用户当初的写法（`1-0:1.8.0*255`），不归一会查不到。
+    /// 清单里确实没有该 code（手输且未入库）时只更新逻辑名，不动类/属性/数据，
     /// 免得把用户刚手填的值抹成默认。
     private func selectObis(code: String) {
         currentObis = code
-        guard let item = store.obisLibrary.first(where: { $0.code == code }) else { return }
+        let key = ObisUtil.comparisonKey(code)
+        guard let item = store.obisLibrary.first(where: { ObisUtil.comparisonKey($0.code) == key }) else { return }
         currentClassText = "\(item.objectClass)"
         currentAttr = "\(item.attribute)"
+        // 请求数据跟着 OBIS 一起切：清单里配了就填，没配就**清空** ——
+        // 否则切到另一条 OBIS 后，上一条残留的数据会被误发出去（写错对象）。
+        requestHex = item.data
     }
 
     // MARK: - 输入合法性提示
@@ -161,7 +167,7 @@ struct MainView: View {
         return HStack(spacing: 4) {
             Image(systemName: ok ? "checkmark.circle" : "exclamationmark.triangle.fill")
             Text(requestHex.isEmpty
-                 ? "写/执行用的 HEX 字节（如 11 01）；留空表示无参数"
+                 ? "写/执行用的 HEX（如 11 01）；留空 = 无参数。选 OBIS 时会按清单自动填入"
                  : (ok ? "\(digits / 2) 字节" : "HEX 需偶数位且仅含 0-9 A-F"))
             Spacer(minLength: 0)
         }
@@ -419,7 +425,9 @@ struct MainView: View {
         session.state = "连接中…"
         let opName = op.map { $0 == .read ? "读" : ($0 == .write ? "写" : "执行") } ?? "连接测试"
         store.log(.info, opName)
-        if op != nil { store.rememberObis(currentObis) }
+        // 存**归一形态**：否则同一对象按不同写法会进"最近"列表两条，
+        // 且回查清单时匹配不上（见 selectObis）。
+        if op != nil { store.rememberObis(ObisUtil.comparisonKey(currentObis)) }
 
         let cfg = store.config
         let reader = GXDLMSReader(
@@ -445,7 +453,7 @@ struct MainView: View {
         )
         reader.run(op: op,
                    obis: op == nil ? nil : ObisUtil.parse(currentObis),
-                   // NumberInput.parse 返回 Int?，?? 3 之后已是 Int；
+                   // NumberInput.parse 返回 Int?；兜底默认 **1 类**（与 ObisItem.objectClass 一致）。
                    // GXDLMSReader.run 的 classVal 参数就是 Int（内部再转 UInt16 给 C）。
                    // 这里不要再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
                    classVal: NumberInput.parse(currentClassText) ?? 1,

@@ -2,8 +2,8 @@
 //  ObisImporter.swift
 //  从 JSON / CSV / 预置导入 OBIS 条目。
 //
-//  JSON 格式：数组，每项 { "code","name","unit","objectClass","attribute" }。
-//  CSV 格式：code,name,unit（逗号分隔，支持引号包裹）。
+// JSON 格式：数组，每项 { "code","name","unit","objectClass","attribute","scaling","data" }。
+// CSV 格式：code,name,unit,接口类,属性,请求数据(HEX)（逗号分隔，支持引号包裹）。
 //
 
 import Foundation
@@ -53,10 +53,13 @@ enum ObisImporter {
             let code = fields[0].trimmingCharacters(in: .whitespaces)
             let name = fields.count > 1 ? fields[1] : code
             let unit = fields.count > 2 ? fields[2] : ""
-            // 可选的第 4/5 列：接口类、属性（与 JSON 的 objectClass / attribute 对齐）
+            // 可选的第 4/5/6 列：接口类、属性、请求数据(HEX)
+            // （与 JSON 的 objectClass / attribute / data 对齐）
             let cls = fields.count > 3 ? NumberInput.parse(fields[3]) : nil
             let attr = fields.count > 4 ? NumberInput.parse(fields[4]) : nil
-            return makeItem(code: code, name: name, unit: unit, objectClass: cls, attribute: attr)
+            let data = fields.count > 5 ? fields[5].trimmingCharacters(in: .whitespaces) : ""
+            return makeItem(code: code, name: name, unit: unit,
+                            objectClass: cls, attribute: attr, data: data)
         }
     }
 
@@ -78,11 +81,13 @@ enum ObisImporter {
     }
 
     private static func makeItem(code: String, name: String, unit: String,
-                                 objectClass: Int? = nil, attribute: Int? = nil) -> ObisItem? {
+                                 objectClass: Int? = nil, attribute: Int? = nil,
+                                 data: String = "") -> ObisItem? {
         guard isValid(code: code) else { return nil }
         return ObisItem(code: normalize(code), name: name.isEmpty ? code : name,
                         unit: unit,
-                        objectClass: objectClass ?? 3, attribute: attribute ?? 2,
+                        objectClass: objectClass ?? 1, attribute: attribute ?? 2,
+                        data: data,
                         enabled: true)
     }
 
@@ -111,6 +116,8 @@ private struct ImportEntry: Decodable {
     var attribute: Int?
     /// 量纲/倍率。之前缺这个字段 → 导入带 scaling 的 JSON 会**静默丢掉**。
     var scaling: String?
+    /// Set / Action 的固定请求数据（HEX）。之前缺这个字段 → 导入时**静默丢掉**。
+    var data: String?
 
     func toItem() -> ObisItem? {
         guard ObisImporter.isValid(code: code) else { return nil }
@@ -118,9 +125,10 @@ private struct ImportEntry: Decodable {
             code: ObisImporter.normalize(code),
             name: name ?? ObisImporter.normalize(code),
             unit: unit ?? "",
-            objectClass: objectClass ?? 3,
+            objectClass: objectClass ?? 1,
             attribute: attribute ?? 2,
             scaling: scaling ?? "",
+            data: data ?? "",
             enabled: true)
     }
 }

@@ -88,26 +88,8 @@ struct ParamsView: View {
                             .font(.system(.body, design: .monospaced)).foregroundStyle(.secondary)
                     }
                 }
-                HStack { Text("通信地址(服务器)"); Spacer(); hexDWordField($store.config.serverAddress) }
-                // 地址宽度：Gurux 其实是**按数值大小自动定宽**的，所以这里选的和实际生效的
-                // 可能不一致 —— 下面那行会把"编码后的真实字节"显示出来，直接对照即可。
-                Picker("地址宽度", selection: $store.config.serverAddressWidth) {
-                    Text("4 字节").tag(4)
-                    Text("2 字节").tag(2)
-                    Text("1 字节").tag(1)
-                }
-                HStack(spacing: 4) {
-                    Image(systemName: store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
-                          ? "checkmark.circle" : "exclamationmark.triangle.fill")
-                    Text("编码后 \(store.config.serverAddressWireHex)（实际 \(store.config.serverAddressEffectiveWidth) 字节）"
-                         + (store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
-                            ? " · 末字节 bit0=1 表示地址域结束"
-                            : " · 与所选 \(store.config.serverAddressWidth) 字节不符"))
-                    Spacer(minLength: 0)
-                }
-                .font(.caption2)
-                .foregroundStyle(store.config.serverAddressEffectiveWidth == store.config.serverAddressWidth
-                                 ? Color.secondary : Color.orange)
+                HStack { Text("通信地址(服务器)"); Spacer(); serverAddressField }
+                serverAddressHint
             } else {
                 HStack { Text("源地址(WR)"); Spacer(); hexField($store.config.wrapperSource) }
                 HStack { Text("目标地址(WR)"); Spacer(); hexField($store.config.wrapperTarget) }
@@ -116,7 +98,7 @@ struct ParamsView: View {
             Text("地址 · 封装")
         } footer: {
             Text(store.config.framing == .hdlc
-                 ? "HDLC：客户端=预设(仅「自定义」可手输，1 字节)；通信地址为逻辑+物理合成，4/2/1 字节，不省前导0"
+                 ? "HDLC：客户端=预设(仅「自定义」可手输，1 字节)；通信地址按「输入字节数」定宽 —— 1 字节=仅逻辑地址，2 字节=逻辑/物理各 1，4 字节=各 2（如 00013FFF = 逻辑 0001 + 物理 3FFF），其它字节数非法"
                  : "Wrapper：源/目标直接写入（默认 0001/0001）")
         }
     }
@@ -175,6 +157,64 @@ struct ParamsView: View {
         }
     }
 
+    /// 通信地址(服务器) 输入框：**保留原始输入**（宽度由字节数决定，不能用 UInt32 存）。
+    /// 只做归一化（去空白/分隔符、转大写），非法字符原样留着让下面的提示标红。
+    private var serverAddressField: some View {
+        TextField("00013FFF", text: Binding(
+            get: { store.config.serverAddressHex },
+            set: { store.config.serverAddressHex = HexUtil.normalize($0) }
+        ))
+        .keyboardType(.asciiCapable).textInputAutocapitalization(.characters)
+        .autocorrectionDisabled()
+        .multilineTextAlignment(.trailing).font(.system(.body, design: .monospaced))
+    }
+
+    /// 地址合法性与编码预览。
+    ///
+    /// 规则（宽度 = 输入字节数，不再是单独的选择器）：
+    ///   1 字节 → 整串是**逻辑**地址（无物理地址）
+    ///   2 字节 → 逻辑 1 字节 + 物理 1 字节
+    ///   4 字节 → 逻辑 2 字节 + 物理 2 字节
+    ///   其它（如 3 字节）→ 非法，标红
+    private var serverAddressHint: some View {
+        let parts = serverAddressHintParts(store.config)
+        return HStack(alignment: .top, spacing: 4) {
+            Image(systemName: parts.icon)
+            Text(parts.text)
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(parts.color)
+    }
+
+    private func serverAddressHintParts(_ c: ConnectionConfig) -> (icon: String, color: Color, text: String) {
+        let n = c.serverAddressNormalized
+        if n.isEmpty {
+            return ("exclamationmark.triangle.fill", .orange,
+                    "如 00013FFF（4 字节 = 逻辑 00 01 + 物理 3F FF）")
+        }
+        let bytes = c.serverAddressBytes
+        if bytes == 0 {
+            return ("exclamationmark.triangle.fill", .red,
+                    "HEX 需偶数位且仅含 0-9 A-F（当前 \(n.count) 位）")
+        }
+        if !c.serverAddressIsValid {
+            return ("xmark.octagon.fill", .red,
+                    "地址只能 1 / 2 / 4 字节，当前 \(bytes) 字节")
+        }
+        let width = bytes == 2 ? "%02X" : "%04X"
+        let split = bytes == 1
+            ? "仅逻辑 \(String(format: "%02X", c.serverLogical))（无物理地址）"
+            : "逻辑 \(String(format: width, c.serverLogical)) + 物理 \(String(format: width, c.serverPhysical))"
+        let matched = c.serverAddressWidthMatched
+        let tail = matched
+            ? " · 末字节 bit0=1 表示地址域结束"
+            : " · 实际按 \(c.serverAddressEffectiveWidth) 字节发（Gurux 按值定宽）"
+        return (matched ? "checkmark.circle" : "exclamationmark.triangle.fill",
+                matched ? .secondary : .orange,
+                "编码后 \(c.serverAddressWireHex)（\(c.serverAddressEffectiveWidth) 字节）· \(split)\(tail)")
+    }
+
     private func hexField(_ binding: Binding<UInt32>) -> some View {
         TextField("", text: Binding(
             get: { String(format: "%04X", binding.wrappedValue) },
@@ -194,19 +234,6 @@ struct ParamsView: View {
             set: { n in
                 let clean = String(n.filter { !$0.isWhitespace }).uppercased()
                 if let v = UInt32(clean, radix: 16) { binding.wrappedValue = v & 0xFF }
-            }
-        ))
-        .keyboardType(.asciiCapable).textInputAutocapitalization(.characters)
-        .multilineTextAlignment(.trailing).font(.system(.body, design: .monospaced))
-    }
-
-    /// 通信地址(服务器)：固定 8 位 hex，前导 0 补齐（如 00013FFF），支持 4/2/1 字节。
-    private func hexDWordField(_ binding: Binding<UInt32>) -> some View {
-        TextField("00000000", text: Binding(
-            get: { String(format: "%08X", binding.wrappedValue) },
-            set: { n in
-                let clean = String(n.filter { !$0.isWhitespace }).uppercased()
-                if let v = UInt32(clean, radix: 16) { binding.wrappedValue = v }
             }
         ))
         .keyboardType(.asciiCapable).textInputAutocapitalization(.characters)

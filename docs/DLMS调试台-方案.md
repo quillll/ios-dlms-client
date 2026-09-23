@@ -321,7 +321,7 @@
 | R22 | **密钥长度未校验**：`hexToBytes` 走 `bb_addHexString`，任意长度都接受 | AES-128 需 **16 字节**。UI 已有字节数提示（`HexUtil.isValid`），但 bridge 未拦截 → 建议 bridge 校验长度并返回错误码，别让错长度密钥进到 cipher |
 | R23 | 整数越界曾直接 **trap 崩溃**（`UInt16(x)`/`UInt8(x)` 是非夹取转换） | v1.4 已修：C 边界统一 `UInt16(clamping:)` / `UInt8(clamping:)`（类填 99999、属性填 300、端口填 99999 不再闪退） |
 | R24 | OBIS 编辑器接口类占位符写 `Data=1`，该串含 `=` **无法解析** → 保存时静默保留旧值 | v1.4 已改为可解析的示例（`3 / 0x1F`） |
-| R25 | 地址"1 字节 / 2 字节"**无法用数值区分**（`01` 与 `0001` 都是 `0x01`） | Gurux 按 `serverAddress` 量级推断字节数、无 `addressSize`。若真表要求 2 字节字段而值恰为 `0x0001`，需 P3 引入显式地址宽度（与 R16 同源） |
+| R25 | 地址"1 字节 / 2 字节"**无法用数值区分**（`01` 与 `0001` 都是 `0x01`） | **v1.6 已解决 ✓**：`serverAddress` 不再用 `UInt32`，改为**保留原始输入串** `serverAddressHex` —— 宽度 = 输入字节数（1/2/4；3 字节等非法，UI 标红）。拆分规则：1 字节=仅逻辑地址；2 字节=逻辑/物理各 1；4 字节=各 2。Gurux 仍按数值量级定宽，故 UI 用 `serverAddressWidthMatched` 提示"输入宽度 ≠ 实际宽度"（见 R16） |
 
 ---
 
@@ -338,7 +338,7 @@
 | SystemTitle 方向 | **客户端自己的** → `cipher.systemTitle`（`client.c:443` 拿它当 GMAC 密钥，须在 AARQ 前设）；**服务器的** → 顶层 `unsigned char sourceSystemTitle[8]`（AARE 自动回填，`apdu.c:1717`） | `dlmssettings.h:117`、`ciphering.h:83` |
 | 密钥落点 | GUEK → `cipher.blockCipherKey`；GUAK → `cipher.authenticationKey`；`dedicatedKey` 为预留槽位 | `DLMSCore.h:48-50` + `DLMSBridge.c:216-260` |
 | HDLC 控制字段 | `SNRM=0x93` / `UA=0x73` / `DISC=0x53` / `DM=0x1F` | `enums.h:1203/1208/1223/1193` |
-| HDLC 地址字节数 | 按 `serverAddress` **量级自动推断**；`dlmssettings.h` 中**无** `addressSize` 字段 | `dlmssettings.h:132/134` + `dlms.c` 帧构造 |
+| HDLC 地址字节数 | 库里按 `serverAddress` **量级自动推断**；`dlmssettings.h` 中**无** `addressSize` 字段 → 所以桥接层必须**先把输入按目标宽度拼成 28/14/7 位**再喂进去（v1.6 起由 `serverAddressHex` 的字节数决定宽度，见 R25） | `dlmssettings.h:132/134` + `dlms.c:2420-2445` |
 | `cip_tracePdu` | `extern` 弱符号、库不实现 → 自己提供同名函数即可拿到**明文 PDU**；只需开 `gxignore.h:186` 的 `DLMS_TRACE_PDU` | `ciphering.h:192` |
 | 抓原始帧 | 在 bridge 的 send/recv 处汇总即可（TCP 上报文必经），无需 patch vendor | — |
 
@@ -346,7 +346,7 @@
 
 - `cl_methodLN` 的复杂入参（ARRAY / STRUCTURE / 浮点 / 日期）→ P3；注意 R17 的 vendor bug（分支条件恒假）
 - **精确报文类型标注**：让 bridge 把 C 层已解析的 `gxReplyData.command`（`DLMS_COMMAND`）随 trace 回传，即可去掉启发式误标风险（R20）
-- **地址宽度显式表达**（1/2/4 字节区分）→ P3，与 R16 / R25 同源
+- **地址宽度显式表达**（1/2/4 字节区分）→ **v1.6 已实现 ✓**（`serverAddressHex` 保留输入字节数）
 - 密钥长度在 bridge 侧拦截（R22）
 
 ---
@@ -640,7 +640,7 @@ else if (value < 0x10000000) { address = 4 字节形式;                        
 | ① 可观测性（步骤码 + 区分"发送失败"） | ✅ **已实现**（见下） |
 | ② 修 HLS 应答 | 依赖 ① 的现场复现结果 |
 | ③ 传输层预读缓冲 + 字符间超时断帧 | ✅ **已实现**（= 报告 D5） |
-| ④ 地址口径对齐 + 宽度可选（4/2/1） | ✅ 已实现 |
+| ④ 地址口径对齐 + **宽度按输入字节数自动判定**（v1.6 重做，取代原"手动宽度选择器"） | ✅ 已实现（见 R25） |
 
 ### 16.3 实施进度
 

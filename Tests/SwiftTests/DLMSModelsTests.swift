@@ -41,63 +41,127 @@ final class ObisUtilTests: XCTestCase {
         XCTAssertNil(ObisUtil.parse(""))
         XCTAssertNil(ObisUtil.parse("1.2.3.4.5.6.7"))  // 超过6段
     }
+
+    /// 归一形态：让「最近 OBIS」与清单条目能匹配上（两边写法可能不同）。
+    func testComparisonKeyUnifiesSeparators() {
+        XCTAssertEqual(ObisUtil.comparisonKey("1-0:1.8.0*255"), "1.0.1.8.0.255")
+        XCTAssertEqual(ObisUtil.comparisonKey("1,0,1,8,0,255"), "1.0.1.8.0.255")
+        XCTAssertEqual(ObisUtil.comparisonKey(" 1.0.1.8.0.255 "), "1.0.1.8.0.255")
+        XCTAssertEqual(ObisUtil.comparisonKey("1.0.1.8.0.255"), "1.0.1.8.0.255")
+        // 同一对象的不同写法 → 同一个 key（这是"回查清单能命中"的前提）
+        XCTAssertEqual(ObisUtil.comparisonKey("1-0:1.8.0*255"),
+                       ObisUtil.comparisonKey("1.0.1.8.0.255"))
+        // 不同对象不能撞
+        XCTAssertNotEqual(ObisUtil.comparisonKey("1.0.1.8.0.255"),
+                          ObisUtil.comparisonKey("1.0.2.8.0.255"))
+    }
 }
 
-/// 通信地址：编码前（逻辑 16 位 + 物理 16 位）→ 编码后（喂 cl_init 的值）。
-/// 关键用例是默认的 `00013FFF`：逻辑 `0x0001` + 物理 `0x3FFF`，
-/// 4 字节下应得到 `0x7FFF`，线上地址域为 `00 02 FE FF`（末字节 bit0=1 表示地址域结束）。
+/// 通信地址：输入（**字节数即宽度** + 逻辑/物理拆分）→ 编码后（喂 cl_init 的值）。
+/// 关键用例是默认的 `00013FFF`：4 字节 → 逻辑 `0x0001` + 物理 `0x3FFF`，
+/// 编码后应得 `0x7FFF`，线上地址域为 `00 02 FE FF`（末字节 bit0=1 表示地址域结束）。
 final class ServerAddressEncodingTests: XCTestCase {
-    private func cfg(_ addr: UInt32, _ width: Int) -> ConnectionConfig {
+    private func cfg(_ hex: String) -> ConnectionConfig {
         var c = ConnectionConfig()
-        c.serverAddress = addr
-        c.serverAddressWidth = width
+        c.serverAddressHex = hex
         return c
     }
 
-    func testDefaultSplitsLogicalAndPhysical() {
-        let c = cfg(0x00013FFF, 4)
-        XCTAssertEqual(c.serverLogical, 0x0001)
-        XCTAssertEqual(c.serverPhysical, 0x3FFF)
+    func testWidthComesFromInputLength() {
+        XCTAssertEqual(cfg("10").serverAddressBytes, 1)
+        XCTAssertEqual(cfg("0010").serverAddressBytes, 2)
+        XCTAssertEqual(cfg("00013FFF").serverAddressBytes, 4)
+        XCTAssertTrue(cfg("10").serverAddressIsValid)
+        XCTAssertTrue(cfg("0010").serverAddressIsValid)
+        XCTAssertTrue(cfg("00013FFF").serverAddressIsValid)
+        // 3 字节：能识别出长度，但**非法**（UI 标红）
+        XCTAssertEqual(cfg("0001FF").serverAddressBytes, 3)
+        XCTAssertFalse(cfg("0001FF").serverAddressIsValid)
+        // 奇数位 / 非法字符 / 空 → 连长度都算不上
+        XCTAssertEqual(cfg("00013FF").serverAddressBytes, 0)
+        XCTAssertEqual(cfg("ZZZZ").serverAddressBytes, 0)
+        XCTAssertEqual(cfg("").serverAddressBytes, 0)
+        XCTAssertFalse(cfg("").serverAddressIsValid)
     }
 
-    func testFourByteEncodedValue() {
-        let c = cfg(0x00013FFF, 4)
-        XCTAssertEqual(c.serverAddressEncoded, 0x7FFF)
-        XCTAssertEqual(c.serverAddressEffectiveWidth, 4)
+    func testOneByteIsLogicalOnly() {
+        let c = cfg("10")
+        XCTAssertEqual(c.serverLogical, 0x10)
+        XCTAssertEqual(c.serverPhysical, 0)              // 1 字节 = 只有逻辑地址
+        XCTAssertEqual(c.serverAddressEncoded, 0x10)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 1)
+        XCTAssertEqual(c.serverAddressWireHex, "21")
+        XCTAssertTrue(c.serverAddressWidthMatched)
     }
 
-    func testFourByteWireBytes() {
-        XCTAssertEqual(cfg(0x00013FFF, 4).serverAddressWireHex, "0002FEFF")
-    }
-
-    func testTwoByte() {
-        let c = cfg((0x01 << 16) | 0x05, 2)
+    func testTwoByteSplitsOneAndOne() {
+        let c = cfg("0105")
+        XCTAssertEqual(c.serverLogical, 0x01)
+        XCTAssertEqual(c.serverPhysical, 0x05)
         XCTAssertEqual(c.serverAddressEncoded, (0x01 << 7) | 0x05)
         XCTAssertEqual(c.serverAddressEffectiveWidth, 2)
     }
 
-    func testOneByte() {
-        let c = cfg(0x10, 1)
-        XCTAssertEqual(c.serverAddressEncoded, 0x10)
-        XCTAssertEqual(c.serverAddressEffectiveWidth, 1)
-        XCTAssertEqual(c.serverAddressWireHex, "21")
+    func testFourByteSplitsTwoAndTwo() {
+        let c = cfg("00013FFF")
+        XCTAssertEqual(c.serverLogical, 0x0001)
+        XCTAssertEqual(c.serverPhysical, 0x3FFF)
+        XCTAssertEqual(c.serverAddressEncoded, 0x7FFF)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 4)
+        XCTAssertEqual(c.serverAddressWireHex, "0002FEFF")
+        XCTAssertTrue(c.serverAddressWidthMatched)
     }
 
     func testWidthMismatchWhenLogicalIsZero() {
-        // 选了 4 字节但逻辑地址为 0 → 值 < 0x4000，Gurux 只会用 2 字节。
-        // UI 靠 effectiveWidth != serverAddressWidth 提示这种情况。
-        let c = cfg(0x00003FFF, 4)
+        // 输入 4 字节但逻辑地址为 0 → 值 < 0x4000，Gurux 只会用 2 字节。
+        // UI 靠 widthMatched == false 提示这种情况。
+        let c = cfg("00003FFF")
         XCTAssertEqual(c.serverAddressEncoded, 0x3FFF)
         XCTAssertEqual(c.serverAddressEffectiveWidth, 2)
+        XCTAssertFalse(c.serverAddressWidthMatched)
+    }
+
+    /// 2 字节输入但逻辑地址为 0 → encoded = 0x10 < 0x80 → Gurux 实际只发 **1 字节**。
+    /// 这是"输入宽度 ≠ 实际宽度"的另一个实例（用户想按 2 字节发，实际发 1 字节）。
+    func testTwoByteInputWithZeroLogicalDegradesToOneByte() {
+        let c = cfg("0010")
+        XCTAssertEqual(c.serverLogical, 0x00)
+        XCTAssertEqual(c.serverPhysical, 0x10)
+        XCTAssertEqual(c.serverAddressEncoded, 0x10)
+        XCTAssertEqual(c.serverAddressEffectiveWidth, 1)
+        XCTAssertFalse(c.serverAddressWidthMatched)
+    }
+
+    func testSeparatorsAndCaseAreTolerated() {
+        let c = cfg("00:01-3f FF")
+        XCTAssertEqual(c.serverAddressBytes, 4)
+        XCTAssertEqual(c.serverAddressEncoded, 0x7FFF)
     }
 
     func testTargetUsesEncodedValueForHDLC() {
-        var c = cfg(0x00013FFF, 4)
+        var c = cfg("00013FFF")
         c.framing = .hdlc
         XCTAssertEqual(c.target, 0x7FFF)
         c.framing = .wrapper
         c.wrapperTarget = 0x01
         XCTAssertEqual(c.target, 0x01)
+    }
+
+    /// 旧存档只有 `serverAddress`(UInt32) → 必须迁移成 8 位 hex，不能丢回默认值。
+    /// （0x00013FFF = 81919）
+    func testLegacyConfigMigratesAddress() throws {
+        let json = #"{"serverAddress":81919}"#
+        let c = try JSONDecoder().decode(ConnectionConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(c.serverAddressHex, "00013FFF")
+        XCTAssertEqual(c.serverAddressEncoded, 0x7FFF)
+    }
+
+    func testDecodedEmptyAddressIsPreserved() throws {
+        // 键存在但为空串 = 用户清空了输入框 → 不能被当成"旧存档"再迁移回来
+        let json = #"{"serverAddressHex":"","serverAddress":81919}"#
+        let c = try JSONDecoder().decode(ConnectionConfig.self, from: Data(json.utf8))
+        XCTAssertEqual(c.serverAddressHex, "")
+        XCTAssertEqual(c.serverAddressBytes, 0)
     }
 }
 
@@ -221,6 +285,63 @@ final class KeyHexTests: XCTestCase {
         var c = ConnectionConfig()
         c.guakHex = "01 23 45 67 89 ab cd ef 01 23 45 67 89 ab cd ef"
         XCTAssertEqual(c.guakEffective, "0123456789ABCDEF0123456789ABCDEF")
+    }
+}
+
+/// OBIS 条目：新增字段（data）**不能让旧 `obis.json` 整份失效**。
+/// `Store.load` 一旦解码失败就返回 nil → 用户的整份清单被静默重置成预置列表，
+/// 所以这里钉住"缺键回退默认值"的容错口径。
+final class ObisItemCodableTests: XCTestCase {
+    func testDefaults() {
+        let it = ObisItem(code: "1.0.1.8.0.255")
+        XCTAssertEqual(it.objectClass, 1)        // 兜底默认 1 类
+        XCTAssertEqual(it.attribute, 2)
+        XCTAssertEqual(it.data, "")              // 无请求数据
+        XCTAssertTrue(it.enabled)
+        XCTAssertEqual(it.displayName, "1.0.1.8.0.255")   // name 为空时退回 code
+    }
+
+    func testDecodeLegacyJSONWithoutDataKey() throws {
+        let json = #"[{"code":"1.0.1.8.0.255","name":"电量","unit":"kWh","objectClass":3,"attribute":2}]"#
+        let items = try JSONDecoder().decode([ObisItem].self, from: Data(json.utf8))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].name, "电量")
+        XCTAssertEqual(items[0].objectClass, 3)  // 存档里的值优先于兜底默认
+        XCTAssertEqual(items[0].data, "")        // 缺键 → 默认空
+        XCTAssertTrue(items[0].enabled)
+    }
+
+    func testDecodeWithRequestData() throws {
+        let json = #"[{"code":"0.0.40.0.0.255","data":"09 11 10"}]"#
+        let items = try JSONDecoder().decode([ObisItem].self, from: Data(json.utf8))
+        XCTAssertEqual(items[0].data, "09 11 10")
+        XCTAssertEqual(items[0].objectClass, 1)  // 缺键 → 1
+    }
+
+    func testDecodeBrokenTypeFallsBackInsteadOfThrowing() throws {
+        let json = #"[{"code":123,"objectClass":"3"}]"#
+        let items = try JSONDecoder().decode([ObisItem].self, from: Data(json.utf8))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].code, "")        // 类型不符 → 默认
+        XCTAssertEqual(items[0].objectClass, 1)
+    }
+
+    func testRoundTrip() throws {
+        let it = ObisItem(code: "1.0.1.8.0.255", name: "电量", unit: "kWh",
+                          objectClass: 3, attribute: 2, scaling: "",
+                          data: "11 01", enabled: true)
+        let back = try JSONDecoder().decode(ObisItem.self, from: try JSONEncoder().encode(it))
+        XCTAssertEqual(back, it)
+    }
+
+    /// 兜底默认值从 3 改成 1 之后，**预置清单里没显式写 IC 的条目会被带偏** ——
+    /// 电量/功率/电压/电流全是 Register(3)。这条断言把预置钉住。
+    func testPresetsCarryTheirOwnObjectClass() {
+        let registers = ObisItem.presets.filter { $0.code.hasPrefix("1.0.") }
+        XCTAssertFalse(registers.isEmpty)
+        XCTAssertTrue(registers.allSatisfy { $0.objectClass == 3 },
+                      "预置的电量/功率/电压/电流必须是 Register(3)，不能吃模型兜底值")
+        XCTAssertEqual(ObisItem.presets.first { $0.code == "0.0.1.0.0.255" }?.objectClass, 1)
     }
 }
 

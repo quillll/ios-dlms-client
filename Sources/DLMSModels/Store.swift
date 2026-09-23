@@ -128,14 +128,17 @@ final class Store: ObservableObject {
 }
 
 // 内置常用 OBIS 预置。
+//
+// ⚠️ 每个条目都**显式写出 objectClass**：模型默认值已改为 1（Data），
+// 而这里的电量/功率/电压/电流都是 Register(3) —— 靠默认值会全部标错类。
 extension ObisItem {
     static let presets: [ObisItem] = [
         ObisItem(code: "0.0.1.0.0.255", name: "逻辑设备名", objectClass: 1),
-        ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", unit: "kWh"),
-        ObisItem(code: "1.0.2.8.0.255", name: "反向有功总电量", unit: "kWh"),
-        ObisItem(code: "1.0.1.7.0.255", name: "当前功率", unit: "kW"),
-        ObisItem(code: "1.0.32.7.0.255", name: "电压L1", unit: "V"),
-        ObisItem(code: "1.0.31.7.0.255", name: "电流A", unit: "A"),
-        ObisItem(code: "0.0.96.1.0.255", name: "设备ID"),
+        ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", unit: "kWh", objectClass: 3),
+        ObisItem(code: "1.0.2.8.0.255", name: "反向有功总电量", unit: "kWh", objectClass: 3),
+        ObisItem(code: "1.0.1.7.0.255", name: "当前功率", unit: "kW", objectClass: 3),
+        ObisItem(code: "1.0.32.7.0.255", name: "电压L1", unit: "V", objectClass: 3),
+        ObisItem(code: "1.0.31.7.0.255", name: "电流A", unit: "A", objectClass: 3),
+        ObisItem(code: "0.0.96.1.0.255", name: "设备ID", objectClass: 1),
     ]
 }

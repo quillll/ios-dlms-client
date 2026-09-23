@@ -107,12 +107,45 @@ struct ObisItem: Codable, Identifiable, Hashable {
     var code: String                 // 任意分隔，如 1.0.1.8.0.255
     var name: String = ""
     var unit: String = ""
-    var objectClass: Int = 3         // 接口类(IC)，可为任意值（10/16 进制）
+    var objectClass: Int = 1         // 接口类(IC)，可为任意值（10/16 进制）；兜底默认 1
     var attribute: Int = 2
     var scaling: String = ""         // 量纲/倍率（可选，仅展示）
+    /// Set / Action 用的**固定请求数据**（HEX，如 `11 01`）。
+    /// 选中该 OBIS 时会自动填进主界面的「请求数据」，省去每次手输；
+    /// 留空表示无参数（写空值 / 执行无参方法）。
+    var data: String = ""
     var enabled: Bool = true
 
     var displayName: String { name.isEmpty ? code : "\(name) · \(code)" }
+
+    /// 显式声明（而非依赖合成），键名一目了然，也不受"合成 CodingKeys 可见性"规则影响。
+    /// 注意：在类型体内声明嵌套类型**不会**抑制 memberwise init（抑制它的是自定义 init）。
+    enum CodingKeys: String, CodingKey {
+        case id, code, name, unit, objectClass, attribute, scaling, data, enabled
+    }
+}
+
+extension ObisItem {
+    /// ⚠️ **手写解码**：缺键必须回退默认值，不能用合成实现。
+    /// 否则旧的 `obis.json`（没有 `data` 字段）会**整份解码失败** →
+    /// `Store.load` 返回 nil → 用户的清单被静默重置成预置列表。
+    /// 与 `ConnectionConfig.init(from:)` 同一套容错口径。
+    ///
+    /// 放在 extension 里而不是 struct 体内：这样编译器仍会合成
+    /// memberwise init（`ObisItem(code:name:…)`），不必为每处调用补参数。
+    init(from decoder: Decoder) throws {
+        self.init(code: "")
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = c.dlmsValue(.id, id)
+        code = c.dlmsValue(.code, code)
+        name = c.dlmsValue(.name, name)
+        unit = c.dlmsValue(.unit, unit)
+        objectClass = c.dlmsValue(.objectClass, objectClass)
+        attribute = c.dlmsValue(.attribute, attribute)
+        scaling = c.dlmsValue(.scaling, scaling)
+        data = c.dlmsValue(.data, data)
+        enabled = c.dlmsValue(.enabled, enabled)
+    }
 }
 
 // MARK: - 报文日志条目
@@ -144,11 +177,16 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     var framing: Framing = .hdlc
     var clientPreset: ClientPreset = .custom
     var clientAddress: UInt32 = 0x01            // HDLC 客户端 / Wrapper 源
-    var serverAddress: UInt32 = 0x00013FFF      // HDLC 通信地址(服务器)：编码前形态 = 逻辑(高16位)+物理(低16位)
-    /// 通信地址宽度（字节）：4 / 2 / 1，默认 4。
-    /// ⚠️ Gurux 是**按数值大小自动选宽度**的（见 `serverAddressEncoded`），
-    /// 所以这个选择只在"数值量级刚好落在该宽度区间"时才真正生效 —— UI 里会显示实际生效的宽度。
-    var serverAddressWidth: Int = 4
+    /// HDLC 通信地址(服务器)的**原始输入**（编码前形态，逻辑+物理合成）。
+    ///
+    /// 为什么保留原串而不是 `UInt32`：地址宽度**由输入的字节数决定**，
+    /// 而 `UInt32` 区分不了 `01`（1 字节）与 `0001`（2 字节）—— 两者数值相同但线上编码不同。
+    /// 拆分规则见 `serverLogical` / `serverPhysical`：
+    ///   1 字节 → 整串是逻辑地址（无物理地址）
+    ///   2 字节 → 逻辑 1 字节 + 物理 1 字节
+    ///   4 字节 → 逻辑 2 字节 + 物理 2 字节
+    /// 其它字节数（如 3 字节）非法，UI 标红。
+    var serverAddressHex: String = "00013FFF"
     var wrapperSource: UInt32 = 0x01
     var wrapperTarget: UInt32 = 0x01
 
@@ -194,6 +232,17 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
 
     init() {}
 
+    /// ⚠️ 手写 CodingKeys（不用合成）：`serverAddress` / `serverAddressWidth` 是**已淘汰的旧字段**，
+    /// 新版本不再写出，但要能**读进来做迁移** —— 否则旧 `config.json` 里的通信地址会丢回默认值。
+    enum CodingKeys: String, CodingKey {
+        case id, ip, port, recvTimeoutMs, framing, clientPreset, clientAddress
+        case serverAddressHex
+        case serverAddress            // 旧：UInt32 合并形态 → 迁移为 serverAddressHex
+        case serverAddressWidth       // 旧：手动宽度 → 已由输入字节数取代（读入后忽略）
+        case wrapperSource, wrapperTarget, recentEndpoints
+        case auth, security, passwordHex, guakHex, guekHex, clientSystemTitleHex, parseEnabled
+    }
+
     init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -204,8 +253,14 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         framing = c.dlmsValue(.framing, framing)
         clientPreset = c.dlmsValue(.clientPreset, clientPreset)
         clientAddress = c.dlmsValue(.clientAddress, clientAddress)
-        serverAddress = c.dlmsValue(.serverAddress, serverAddress)
-        serverAddressWidth = c.dlmsValue(.serverAddressWidth, serverAddressWidth)
+        // 通信地址：新字段 `serverAddressHex` 才是真源 —— 它保留了**输入的字节数**，
+        // 而 UInt32 区分不了 `01`(1 字节) 与 `0001`(2 字节)。
+        // 旧存档只有 `serverAddress`(UInt32) → 按 8 位 hex 迁移过来（默认 00013FFF）。
+        if let stored = try? c.decodeIfPresent(String.self, forKey: .serverAddressHex), let stored {
+            serverAddressHex = stored          // 键存在（含用户清空的空串）→ 原样保留
+        } else {
+            serverAddressHex = String(format: "%08X", c.dlmsValue(.serverAddress, UInt32(0x00013FFF)))
+        }
         wrapperSource = c.dlmsValue(.wrapperSource, wrapperSource)
         wrapperTarget = c.dlmsValue(.wrapperTarget, wrapperTarget)
         recentEndpoints = c.dlmsValue(.recentEndpoints, recentEndpoints)
@@ -240,12 +295,62 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     /// 运行时 target/server 地址（封装相关）。HDLC 必须用**编码后**的值，见下。
     var target: UInt32 { framing == .wrapper ? wrapperTarget : serverAddressEncoded }
 
-    // MARK: - 通信地址：编码前（逻辑+物理）→ 编码后（喂 cl_init）
+    // MARK: - 通信地址：输入（逻辑+物理，宽度由字节数定）→ 编码后（喂 cl_init）
 
-    /// 编码**前**的形态：高 16 位 = 逻辑地址，低 16 位 = 物理地址。
-    /// 默认 `00013FFF` = 逻辑 `0x0001` + 物理 `0x3FFF`。
-    var serverLogical: UInt32 { (serverAddress >> 16) & 0xFFFF }
-    var serverPhysical: UInt32 { serverAddress & 0xFFFF }
+    /// 归一化后的输入（去空白/`:`/`-`、转大写）。非法字符**原样保留**，便于 UI 判定。
+    var serverAddressNormalized: String { HexUtil.normalize(serverAddressHex) }
+
+    /// 输入字节数 —— **地址宽度就是它**。
+    /// 仅在「偶数位 + 全合法 hex」时有效；否则返回 0（UI 据此标红）。
+    var serverAddressBytes: Int {
+        let n = serverAddressNormalized
+        guard !n.isEmpty, n.count % 2 == 0, n.allSatisfy({ $0.isHexDigit }) else { return 0 }
+        return n.count / 2
+    }
+
+    /// 输入是否可用：**只认 1 / 2 / 4 字节**（3 字节等一律非法）。
+    var serverAddressIsValid: Bool { [1, 2, 4].contains(serverAddressBytes) }
+
+    /// 输入拆成的字节数组（按 2 位 hex 一组；非法时为空）。
+    var serverAddressInputBytes: [UInt8] {
+        let n = serverAddressNormalized
+        guard !n.isEmpty, n.count % 2 == 0 else { return [] }
+        var out: [UInt8] = []
+        var i = n.startIndex
+        while i < n.endIndex {
+            let j = n.index(i, offsetBy: 2)
+            guard let b = UInt8(n[i..<j], radix: 16) else { return [] }
+            out.append(b)
+            i = j
+        }
+        return out
+    }
+
+    /// 逻辑地址：1 字节时是整串；2 字节时取第 1 字节；4 字节时取前 2 字节。
+    var serverLogical: UInt32 {
+        let b = serverAddressInputBytes
+        switch b.count {
+        case 1:  return UInt32(b[0])
+        case 2:  return UInt32(b[0])
+        case 4:  return UInt32(b[0]) << 8 | UInt32(b[1])
+        default: return 0
+        }
+    }
+
+    /// 物理地址：**1 字节时没有物理地址**（为 0）；2 字节取第 2 字节；4 字节取后 2 字节。
+    var serverPhysical: UInt32 {
+        let b = serverAddressInputBytes
+        switch b.count {
+        case 1:  return 0
+        case 2:  return UInt32(b[1])
+        case 4:  return UInt32(b[2]) << 8 | UInt32(b[3])
+        default: return 0
+        }
+    }
+
+    /// 编码前形态的合并值（高 16 位逻辑 + 低 16 位物理）。仅供展示/兼容旧代码 ——
+    /// 真源是 `serverAddressHex`（它能表达输入字节数）。
+    var serverAddress: UInt32 { (serverLogical << 16) | serverPhysical }
 
     /// 喂给 `cl_init` 的 serverAddress。
     ///
@@ -254,23 +359,29 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     /// 它期望的输入是"已按目标宽度拼好的值"：
     ///   - 4 字节：共 28 位 = 逻辑 14 位 + 物理 14 位 → `logical << 14 | physical`
     ///   - 2 字节：共 14 位 = 逻辑  7 位 + 物理  7 位 → `logical <<  7 | physical`
-    ///   - 1 字节：只有物理 7 位
-    /// 所以**不能**把 UI 的 `00013FFF` 直接喂进去 —— Gurux 会按 `v>>14` 解出逻辑=0x4F，编码出错误的地址域。
+    ///   - 1 字节：只有逻辑 7 位
+    /// 所以**不能**把输入的 `00013FFF` 直接喂进去 —— Gurux 会按 `v>>14` 解出逻辑=0x4F，编码出错误的地址域。
     var serverAddressEncoded: UInt32 {
-        switch serverAddressWidth {
-        case 1:  return serverPhysical & 0x7F
+        switch serverAddressBytes {
+        case 1:  return serverLogical & 0x7F
         case 2:  return ((serverLogical & 0x7F) << 7) | (serverPhysical & 0x7F)
-        default: return ((serverLogical & 0x3FFF) << 14) | (serverPhysical & 0x3FFF)
+        case 4:  return ((serverLogical & 0x3FFF) << 14) | (serverPhysical & 0x3FFF)
+        default: return 0
         }
     }
 
-    /// Gurux **实际**会用的地址宽度（按数值量级推断，可能与 `serverAddressWidth` 不同）。
-    /// 例：选了 4 字节但逻辑地址为 0 → 值 < 0x4000 → 实际只有 2 字节。UI 用它提示。
+    /// Gurux **实际**会用的地址宽度（按数值量级推断，可能与输入宽度不同）。
+    /// 例：输入 4 字节但逻辑地址为 0 → 值 < 0x4000 → 实际只有 2 字节。UI 用它提示。
     var serverAddressEffectiveWidth: Int {
         let v = serverAddressEncoded
         if v < 0x80 { return 1 }
         if v < 0x4000 { return 2 }
         return 4
+    }
+
+    /// 输入宽度与 Gurux 实际宽度是否一致（不一致时 UI 标黄提示）。
+    var serverAddressWidthMatched: Bool {
+        serverAddressIsValid && serverAddressEffectiveWidth == serverAddressBytes
     }
 
     /// 编码后地址域的实际字节（大端；**末字节 bit0=1 表示地址域结束**）。
@@ -290,7 +401,7 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
     var addressSummary: String {
         framing == .wrapper
             ? "Wrapper 源\(wrapperSource.hex2) 目标\(wrapperTarget.hex2)"
-            : "HDLC 客户端\(clientAddress.hex2) 通信\(serverAddress.hex4)"
+            : "HDLC 客户端\(clientAddress.hex2) 通信\(serverAddressNormalized.isEmpty ? "--" : serverAddressNormalized)"
     }
 }
 
@@ -353,6 +464,19 @@ enum NumberInput {
 }
 
 enum ObisUtil {
+    /// 比较/去重用的归一形态：去空白 + 转大写 + 把 `- : * ,` 统一成 `.`。
+    ///
+    /// 用于「最近 OBIS」与清单条目的匹配 —— 两边写法可能不同
+    /// （`1-0:1.8.0*255` vs `1.0.1.8.0.255`），不归一就查不到，
+    /// 导致选中后类/属性/请求数据都带不过来，下拉里还会出现同一个对象的两个变体。
+    static func comparisonKey(_ code: String) -> String {
+        code.filter { !$0.isWhitespace }.uppercased()
+            .replacingOccurrences(of: "-", with: ".")
+            .replacingOccurrences(of: ":", with: ".")
+            .replacingOccurrences(of: "*", with: ".")
+            .replacingOccurrences(of: ",", with: ".")
+    }
+
     /// 分隔符兼容 `* , . - :`；段内含 a-f 或 0x 前缀 → 16 进制，否则十进制。
     /// 返回 6 字节；非法段或份数不足报 nil。
     static func parse(_ code: String) -> [UInt8]? {

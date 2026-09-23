@@ -25,6 +25,11 @@ struct ObisLibraryView: View {
                             Text(item.displayName).font(.body)
                             Text(item.unit.isEmpty ? item.code : "\(item.code) · \(item.unit)")
                                 .font(.caption).monospaced().foregroundStyle(.secondary)
+                            // 配了请求数据的条目直接标出来（Set/Action 时会被自动填入）
+                            if !item.data.isEmpty {
+                                Text("→ \(item.data)")
+                                    .font(.caption2).monospaced().foregroundStyle(.tertiary)
+                            }
                         }
                         Spacer()
                         Button { editing = item; showEditor = true } label: { Image(systemName: "pencil") }
@@ -95,12 +100,13 @@ struct ObisEditorSheet: View {
     @Binding var item: ObisItem?
     @Environment(\.dismiss) private var dismiss
 
-    @State private var code = "1.0.1.8.0.255"
+    @State private var code = "0.0.1.0.0.255"
     @State private var name = ""
     @State private var unit = ""
     @State private var scaling = ""
-    @State private var icText = "3"
+    @State private var icText = "1"
     @State private var attr = "2"
+    @State private var data = ""
     @State private var showError = false
 
     var body: some View {
@@ -110,12 +116,24 @@ struct ObisEditorSheet: View {
                     TextField("名称", text: $name)
                     // 键盘统一用系统默认：接口类与属性都可能填 16 进制，
                     // 限定纯数字键盘反而让用户打不出来。
-                    TextField("接口类(IC，10/16进制，如 3 / 0x1F)", text: $icText)
+                    TextField("接口类(IC，10/16进制，如 1 / 0x1F)", text: $icText)
                     TextField("逻辑名 OBIS（如 1.0.1.8.0.255）", text: $code)
                         .font(.system(.body, design: .monospaced))
                     TextField("属性/方法", text: $attr)
                     TextField("单位（可选）", text: $unit)
                     TextField("量纲/倍率（可选）", text: $scaling)
+                }
+                Section {
+                    TextField("如 11 01", text: $data)
+                        .font(.system(.body, design: .monospaced))
+                        .keyboardType(.asciiCapable)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("请求数据（可选）")
+                } footer: {
+                    Text("Set / Action 的固定参数（HEX）。选中本条目时会自动填入主界面的「请求数据」，"
+                         + "免去每次手输。留空 = 无参数。")
                 }
             }
             .navigationTitle(item == nil ? "添加 OBIS" : "编辑 OBIS")
@@ -134,6 +152,7 @@ struct ObisEditorSheet: View {
         guard let item else { return }
         code = item.code; name = item.name; unit = item.unit
         icText = "\(item.objectClass)"; attr = "\(item.attribute)"; scaling = item.scaling
+        data = item.data
     }
 
     private func save() {
@@ -143,6 +162,10 @@ struct ObisEditorSheet: View {
         it.name = name.isEmpty ? code : name
         it.unit = unit
         it.scaling = scaling
+        // 只做首尾去空白 + 大写：**保留用户写的分隔空格**（如 "11 01"），
+        // 免得在列表里显示成 "1101" 让人以为自己填错了。
+        // 解析侧本来就容忍空格（`hlp_hexToBytes` 会跳过非 hex 字符）。
+        it.data = data.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         if let ic = NumberInput.parse(icText) { it.objectClass = ic }
         // 属性用同一套 10/16 进制识别，与「类」保持一致。
         // （键盘限制取消后用户可能填 0x10，若还用 Int() 会解析失败并静默回落到 2。）
