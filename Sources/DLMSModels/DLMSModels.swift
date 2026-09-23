@@ -232,15 +232,24 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
 
     init() {}
 
-    /// ⚠️ 手写 CodingKeys（不用合成）：`serverAddress` / `serverAddressWidth` 是**已淘汰的旧字段**，
-    /// 新版本不再写出，但要能**读进来做迁移** —— 否则旧 `config.json` 里的通信地址会丢回默认值。
+    /// `CodingKeys` **只列与存储属性一一对应的键**。
+    ///
+    /// ⚠️ **已淘汰的旧键绝不能放进来** ✗ —— 编译器为 `Encodable` 合成 `encode(to:)` 时，
+    /// 会为**每一个 case** 去找同名存储属性，找不到就整份不满足协议，而且报错只落在
+    /// struct 声明行（`type 'ConnectionConfig' does not conform to protocol 'Encodable'`），
+    /// **完全指不到这一行**，排查成本极高（CI 曾因此红两次：
+    /// 先是 `serverAddressWidth`，然后又被 `serverAddress` 绊倒 —— 两个都是"读入后忽略"的键）。
+    /// 旧键改走下面单独的 `LegacyKeys`，**只读不写**。
     enum CodingKeys: String, CodingKey {
         case id, ip, port, recvTimeoutMs, framing, clientPreset, clientAddress
         case serverAddressHex
-        case serverAddress            // 旧：UInt32 合并形态 → 迁移为 serverAddressHex
-        case serverAddressWidth       // 旧：手动宽度 → 已由输入字节数取代（读入后忽略）
         case wrapperSource, wrapperTarget, recentEndpoints
         case auth, security, passwordHex, guakHex, guekHex, clientSystemTitleHex, parseEnabled
+    }
+
+    /// **仅用于读取**已淘汰的旧键 —— 不放进 `CodingKeys`，因此编码时不会被写出。
+    private enum LegacyKeys: String, CodingKey {
+        case serverAddress            // 旧：UInt32 合并形态（逻辑<<16 | 物理）→ 迁移为 serverAddressHex
     }
 
     init(from decoder: Decoder) throws {
@@ -259,7 +268,14 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         if let stored = try? c.decodeIfPresent(String.self, forKey: .serverAddressHex), let stored {
             serverAddressHex = stored          // 键存在（含用户清空的空串）→ 原样保留
         } else {
-            serverAddressHex = String(format: "%08X", c.dlmsValue(.serverAddress, UInt32(0x00013FFF)))
+            // 旧键走独立的 LegacyKeys（它不在 CodingKeys 里，所以编码时不会被写出）。
+            var legacy: UInt32 = 0x00013FFF
+            if let lc = try? decoder.container(keyedBy: LegacyKeys.self),
+               let old = try? lc.decodeIfPresent(UInt32.self, forKey: .serverAddress),
+               let old {
+                legacy = old
+            }
+            serverAddressHex = String(format: "%08X", legacy)
         }
         wrapperSource = c.dlmsValue(.wrapperSource, wrapperSource)
         wrapperTarget = c.dlmsValue(.wrapperTarget, wrapperTarget)
@@ -271,6 +287,40 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         guekHex = c.dlmsValue(.guekHex, guekHex)
         clientSystemTitleHex = c.dlmsValue(.clientSystemTitleHex, clientSystemTitleHex)
         parseEnabled = c.dlmsValue(.parseEnabled, parseEnabled)
+    }
+
+    /// 显式编码：**不依赖编译器合成**。
+    ///
+    /// 为什么手写（而不是让编译器合成）：
+    /// 1. `CodingKeys` 保留了 `serverAddress` 这个**只用于读旧存档**的键，而它现在
+    ///    只是个只读计算属性 —— 合成的 encode 会把它也写出去，与"新版本不再写出
+    ///    旧字段"的约定冲突（新旧字段会同时出现在 config.json 里）。
+    /// 2. 合成实现要求 CodingKeys 与存储属性严格对应；一旦不对应（比如多出一个
+    ///    无属性对应的 case），报错只会落在 struct 声明行
+    ///    （`does not conform to protocol 'Encodable'`），定位成本很高。
+    ///
+    /// ⚠️ 与 `init(from:)` 同一套约定：**新增/改名存储属性时必须同步这里**，
+    /// 否则该字段不会落盘 —— 表现为"改了设置、重启就回默认"。
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(ip, forKey: .ip)
+        try c.encode(port, forKey: .port)
+        try c.encode(recvTimeoutMs, forKey: .recvTimeoutMs)
+        try c.encode(framing, forKey: .framing)
+        try c.encode(clientPreset, forKey: .clientPreset)
+        try c.encode(clientAddress, forKey: .clientAddress)
+        try c.encode(serverAddressHex, forKey: .serverAddressHex)
+        try c.encode(wrapperSource, forKey: .wrapperSource)
+        try c.encode(wrapperTarget, forKey: .wrapperTarget)
+        try c.encode(recentEndpoints, forKey: .recentEndpoints)
+        try c.encode(auth, forKey: .auth)
+        try c.encode(security, forKey: .security)
+        try c.encode(passwordHex, forKey: .passwordHex)
+        try c.encode(guakHex, forKey: .guakHex)
+        try c.encode(guekHex, forKey: .guekHex)
+        try c.encode(clientSystemTitleHex, forKey: .clientSystemTitleHex)
+        try c.encode(parseEnabled, forKey: .parseEnabled)
     }
 
     // MARK: 密钥取值（留空 → 默认值；顺带做 hex 归一化）
