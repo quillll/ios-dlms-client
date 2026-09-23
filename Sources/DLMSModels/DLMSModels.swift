@@ -265,16 +265,34 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
         // 通信地址：新字段 `serverAddressHex` 才是真源 —— 它保留了**输入的字节数**，
         // 而 UInt32 区分不了 `01`(1 字节) 与 `0001`(2 字节)。
         // 旧存档只有 `serverAddress`(UInt32) → 按 8 位 hex 迁移过来（默认 00013FFF）。
-        if let stored = try? c.decodeIfPresent(String.self, forKey: .serverAddressHex), let stored {
-            serverAddressHex = stored          // 键存在（含用户清空的空串）→ 原样保留
+        //
+        // ⚠️ 这里刻意用 `do/catch` 而**不用 `try?`**：
+        //    `try?` 对**已经是 Optional** 的结果不再嵌套（Swift 5 起 flatten，SE-0230），
+        //    `try? c.decodeIfPresent(String.self, …)` 的类型就是 `String?`；
+        //    若沿用 `if let x = try? …, let x` 那种写法，第二个 `let` 会报
+        //    "initializer for conditional binding must have Optional type"（CI 踩过一次）。
+        //    `do/catch` 没有这层歧义，代价只是多两行 —— 本机没有 Swift 工具链，值得换。
+        var storedAddress: String?
+        do {
+            storedAddress = try c.decodeIfPresent(String.self, forKey: .serverAddressHex)
+        } catch {
+            storedAddress = nil        // 类型不符等 → 当作"没有新键"，走下面的旧存档迁移
+        }
+        if let storedAddress {
+            serverAddressHex = storedAddress   // 键存在（含用户清空的空串）→ 原样保留
         } else {
             // 旧键走独立的 LegacyKeys（它不在 CodingKeys 里，所以编码时不会被写出）。
-            // 注意 container(keyedBy:) 本身不抛，别在这里套 try?（会得到"多余 try"警告）。
+            // 注意 `Decoder.container(keyedBy:)` 本身不抛，别在那里套 `try?`。
             var legacy: UInt32 = 0x00013FFF
             let legacyContainer = decoder.container(keyedBy: LegacyKeys.self)
-            if let old = try? legacyContainer.decodeIfPresent(UInt32.self, forKey: .serverAddress),
-               let old {
-                legacy = old
+            var oldAddress: UInt32?
+            do {
+                oldAddress = try legacyContainer.decodeIfPresent(UInt32.self, forKey: .serverAddress)
+            } catch {
+                oldAddress = nil
+            }
+            if let oldAddress {
+                legacy = oldAddress
             }
             serverAddressHex = String(format: "%08X", legacy)
         }
