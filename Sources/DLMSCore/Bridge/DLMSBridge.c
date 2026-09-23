@@ -610,8 +610,10 @@ const char* dlms_dataTypeName(int dataType)
     case DLMS_DATA_TYPE_STRUCTURE:            return "structure";
     case DLMS_DATA_TYPE_BOOLEAN:              return "boolean";
     case DLMS_DATA_TYPE_BIT_STRING:           return "bit-string";
-    case DLMS_DATA_TYPE_INT32:                return "long";
-    case DLMS_DATA_TYPE_UINT32:               return "long-unsigned";
+    // Blue Book：0x05 = double-long(INT32)、0x06 = double-long-unsigned(UINT32)；
+    // 0x10 / 0x12 才是 long / long-unsigned。原来这两行误用了 16 位的名字。
+    case DLMS_DATA_TYPE_INT32:                return "double-long";
+    case DLMS_DATA_TYPE_UINT32:               return "double-long-unsigned";
     case DLMS_DATA_TYPE_OCTET_STRING:         return "octet-string";
     case DLMS_DATA_TYPE_STRING:               return "visible-string";
     case DLMS_DATA_TYPE_STRING_UTF8:          return "utf8-string";
@@ -708,6 +710,8 @@ static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb)
     int n = 0, i;
     switch (v->vt)
     {
+    // BOOLEAN 原来漏在这个分支表里 → 行1 会只剩 tag、丢掉值字节（03 01 变成 03）。
+    case DLMS_DATA_TYPE_BOOLEAN:u = v->boolVal ? 1 : 0;                     n = 1; break;
     case DLMS_DATA_TYPE_UINT8:
     case DLMS_DATA_TYPE_ENUM:   u = (uint64_t)v->bVal;                      n = 1; break;
     case DLMS_DATA_TYPE_INT8:   u = (uint64_t)(uint8_t)v->cVal;             n = 1; break;
@@ -756,6 +760,78 @@ static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb)
 // **故意不加 static**：让 C 单测能直接构造 dlmsVARIANT 断言渲染结果
 //（见 Tests/CTests/test_dlms.c 的 [render] 段）。生产路径由下面的
 // replyValueString() 调用，不对外暴露到 DLMSCore.h（避免 Swift 侧多看到 C 类型）。
+// 变长类型：编码里带显式长度字节（Blue Book 的 octet-string / visible-string /
+// utf8-string / bit-string 都是 tag + 长度 + 内容）。
+static int hasExplicitLength(DLMS_DATA_TYPE vt)
+{
+    return vt == DLMS_DATA_TYPE_OCTET_STRING || vt == DLMS_DATA_TYPE_STRING ||
+           vt == DLMS_DATA_TYPE_STRING_UTF8 || vt == DLMS_DATA_TYPE_BIT_STRING;
+}
+
+// 取变长类型的「内容」指针与长度（只读，不分配）。
+static const unsigned char* lengthPrefixedBytes(dlmsVARIANT* v, uint32_t* len)
+{
+    *len = 0;
+    if (v->vt == DLMS_DATA_TYPE_OCTET_STRING)
+    {
+        if (v->byteArr != NULL) { *len = v->byteArr->size; return v->byteArr->data; }
+        return NULL;
+    }
+    if (v->vt == DLMS_DATA_TYPE_STRING)
+    {
+        if (v->strVal != NULL) { *len = v->strVal->size; return v->strVal->data; }
+        return NULL;
+    }
+    if (v->vt == DLMS_DATA_TYPE_STRING_UTF8)
+    {
+        if (v->strUtfVal != NULL) { *len = v->strUtfVal->size; return v->strUtfVal->data; }
+        return NULL;
+    }
+    return NULL;
+}
+
+// 第一行：**含类型标签**的 HEX。规则按现场报文习惯：
+//   · 变长类型：tag + 长度 + 内容        例 09 03 31 32 33（octet-string "123"）
+//   · 定长类型：tag + 内容（大端对齐）   例 05 00 00 00 01 / 12 12 34 / 11 01
+//   · 复合/未知类型：只能给 tag（variant 里没有原始编码，无法回推）
+static void appendTypedHex(dlmsVARIANT* v, gxByteBuffer* bb)
+{
+    char seg[8];
+    snprintf(seg, sizeof(seg), "%02X", (int)(v->vt & 0xFF));
+    bbAppendStr(bb, seg);
+
+    if (hasExplicitLength(v->vt))
+    {
+        uint32_t len = 0, i;
+        const unsigned char* p = lengthPrefixedBytes(v, &len);
+        snprintf(seg, sizeof(seg), " %02X", (int)(len & 0xFF));
+        bbAppendStr(bb, seg);
+        for (i = 0; p != NULL && i < len; i++)
+        {
+            snprintf(seg, sizeof(seg), " %02X", p[i]);
+            bbAppendStr(bb, seg);
+        }
+        return;
+    }
+
+    // 定长类型：复用 appendHex（整数按宽度大端）。它对未支持的类型会写一个 "-"，
+    // 这里要当作"没写"，否则末尾会多出 "01 -" 这种尾巴。
+    {
+        gxByteBuffer th;
+        bb_init(&th);
+        appendHex(v, &th);
+        if (th.size > 0 && !(th.size == 1 && th.data[0] == '-'))
+        {
+            bbAppendStr(bb, " ");
+            bb_set(bb, th.data, th.size);      // 注意：bb_set 是**追加**（写在末尾并增长 size）
+        }
+        bb_clear(&th);
+    }
+}
+
+// 渲染为**两行**（UI 的"解析"面板直接显示；"解析使能"关闭时只取第一行）：
+//   第一行：含类型标签的 HEX
+//   第二行：-> Type: <类型名>[, Length: n], Value: <可读值>
 int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen)
 {
     int written = 0;
@@ -768,27 +844,21 @@ int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen)
         char* s;
         bb_init(&bb);
 
-        bbAppendStr(&bb, "类型   ");
+        // 第一行：含类型标签的 HEX
+        appendTypedHex(value, &bb);
+        // 第二行：解析结果
+        bbAppendStr(&bb, "\n-> Type: ");
         bbAppendStr(&bb, dlms_dataTypeName((int)value->vt));
+        if (hasExplicitLength(value->vt))
         {
+            uint32_t len = 0;
             char tmp[24];
-            snprintf(tmp, sizeof(tmp), " (%d)\n", (int)value->vt);
+            (void)lengthPrefixedBytes(value, &len);
+            snprintf(tmp, sizeof(tmp), ", Length: %u", (unsigned)len);
             bbAppendStr(&bb, tmp);
         }
-
-        bbAppendStr(&bb, "值     ");
-        if (var_toString(value, &bb) != 0)
-        {
-            bbAppendStr(&bb, "(无法转换)");
-        }
-        bbAppendStr(&bb, "\n");
-
-        bbAppendStr(&bb, "可读   ");
+        bbAppendStr(&bb, ", Value: ");
         appendReadable(value, &bb);
-        bbAppendStr(&bb, "\n");
-
-        bbAppendStr(&bb, "HEX    ");
-        appendHex(value, &bb);
         bbAppendStr(&bb, "\n");
 
         bb_setUInt8(&bb, 0);          // 收尾 NUL：bb_toString 要求缓冲区以 0 结尾

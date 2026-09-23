@@ -188,8 +188,8 @@ int main(int argc, char** argv)
         printf("  ·  dlms_read 已返回（未崩溃/未挂死）\n");
         CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
               "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
-        CHECK(strstr(out, "类型") != NULL && strstr(out, "值") != NULL,
-              "e2e: 解析面板拿到四行块（类型/值…）");
+        CHECK(strstr(out, "-> Type: ") != NULL && strstr(out, ", Value: ") != NULL,
+              "e2e: 解析面板拿到两行块（含类型标签 HEX + -> Type/Value）");
 
         outLen = (int)sizeof(out);
         r3 = dlms_write(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2,

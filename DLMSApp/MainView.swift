@@ -17,12 +17,13 @@ struct MainView: View {
     @EnvironmentObject var store: Store
     @StateObject private var session = SessionModel()
 
-    @State private var currentClassText = "3"
+    @State private var currentClassText = "1"
     @State private var currentObis = "1.0.1.8.0.255"
     @State private var currentAttr = "2"
     @State private var requestHex = ""
     @State private var showParams = false
     @State private var panel: Panel = .data
+    @State private var showLogFullScreen = false
     /// 「最近一条 OBIS」只在首次出现时恢复一次，避免每次回到本页覆盖用户手改的类/属性。
     @State private var didRestoreRecent = false
 
@@ -70,8 +71,14 @@ struct MainView: View {
                 }
                 .buttonStyle(.bordered).disabled(session.isBusy)
             }
-            Text(store.config.addressSummary)
-                .font(.subheadline).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(store.config.addressSummary)
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                // 版本号放在常驻的主界面上（而不是只在设置页），排查时一眼能看到打的是哪版
+                Text(AppInfo.versionBadge)
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.1)))
@@ -83,7 +90,7 @@ struct MainView: View {
             HStack(spacing: 8) {
                 // 键盘统一用系统默认：类与属性都可能填 16 进制（如 0x1F），
                 // 限定纯数字键盘反而是限制。
-                TextField("类 (10/16进制, 如 3 / 0x1F)", text: $currentClassText)
+                TextField("类 (10/16进制, 如 1 / 0x1F)", text: $currentClassText)
                     .textFieldStyle(.roundedBorder)
                 TextField("属性", text: $currentAttr)
                     .frame(width: 64).textFieldStyle(.roundedBorder)
@@ -184,6 +191,18 @@ struct MainView: View {
     }
 
     // MARK: - 解析 / 报文
+
+    /// 解析面板正文。
+    /// ⚠️ 「解析使能」原先**没有任何地方读取它**（只有两处 Toggle 在写），拨了完全没反应 ——
+    /// 现在真正生效：关闭时只显示第一行（含类型的原始 HEX），不做类型/值解析。
+    private var dataPanelText: String {
+        let raw = store.parsedText
+        guard !raw.isEmpty else { return "（暂无数据）" }
+        guard !store.config.parseEnabled else { return raw }
+        return raw.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init) ?? raw
+    }
+
     private var resultPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("面板", selection: $panel) { ForEach(Panel.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
@@ -198,18 +217,47 @@ struct MainView: View {
                 } clear: {
                     store.parsedText = ""
                 }
-                Text(store.parsedText.isEmpty ? "（暂无数据）" : store.parsedText)
+                Text(dataPanelText)
                     .font(.system(.caption, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.1)))
             } else {
                 panelHeader(clearEnabled: !store.logs.isEmpty) {
-                    Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
+                    HStack(spacing: 8) {
+                        Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
+                        Button { showLogFullScreen = true } label: {
+                            Label("满屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption2)
+                        }
+                    }
                 } clear: {
                     store.clearLogs()
                 }
                 logList
+            }
+        }
+        // 报文嵌在外层 ScrollView 里，高度被压得很小、也拉不开 —— 给它一个整屏视图看全
+        .fullScreenCover(isPresented: $showLogFullScreen) { logFullScreenView }
+    }
+
+    /// 报文的满屏视图：与内嵌的 logList 共用同一套渲染（含自动跟随）。
+    private var logFullScreenView: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 8) {
+                logList
+            }
+            .padding(.horizontal)
+            .navigationTitle("报文 · \(store.logs.count) 条")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { showLogFullScreen = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { store.clearLogs() } label: { Label("清空", systemImage: "trash") }
+                        .disabled(store.logs.isEmpty)
+                }
             }
         }
     }
@@ -352,7 +400,7 @@ struct MainView: View {
                    // NumberInput.parse 返回 Int?，?? 3 之后已是 Int；
                    // GXDLMSReader.run 的 classVal 参数就是 Int（内部再转 UInt16 给 C）。
                    // 这里不要再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
-                   classVal: NumberInput.parse(currentClassText) ?? 3,
+                   classVal: NumberInput.parse(currentClassText) ?? 1,
                    // 属性与「类」用同一套 10/16 进制识别（键盘已放开，用户可能填 0x03）
                    attr: NumberInput.parse(currentAttr) ?? 2,
                    hex: requestHex) {

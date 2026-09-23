@@ -397,6 +397,42 @@ static void test_render(void)
     v.bVal = 7;
     len = 0;
     CHECK(dlms_renderValue(&v, buf, &len) == 0, "render: cap=0 安全");
+
+    // ── 两行格式 + 含类型标签的 HEX ──────────────────────────────────────────
+    // 直接把需求里给的例子钉成回归测试。
+    //   octet-string "123"  →  行1 `09 03 31 32 33`，行2 Type/Length/Value
+    {
+        static unsigned char s123[] = { 0x31, 0x32, 0x33 };
+        gxByteBuffer bb;
+        bb_init(&bb);
+        bb_set(&bb, s123, (uint32_t)sizeof(s123));
+        var_init(&v);
+        v.vt = DLMS_DATA_TYPE_OCTET_STRING;
+        v.byteArr = &bb;                       // 栈缓冲：绝不能 var_clear（见前面的坑）
+        len = (int)sizeof(buf);
+        CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: octet-string 渲染成功");
+        CHECK(strstr(buf, "09 03 31 32 33") != NULL, "render2: 行1 = 09 03 31 32 33");
+        CHECK(strstr(buf, "-> Type: octet-string") != NULL, "render2: 行2 类型名");
+        CHECK(strstr(buf, "Length: 3") != NULL, "render2: 行2 长度");
+        CHECK(strstr(buf, "Value: 123") != NULL, "render2: 行2 值");
+        bb_clear(&bb);
+    }
+    //   INT32 = 1  →  行1 `05 00 00 00 01`（tag 05 = double-long，Blue Book）
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_INT32;
+    v.lVal = 1;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: int32 渲染成功");
+    CHECK(strstr(buf, "05 00 00 00 01") != NULL, "render2: 行1 = 05 00 00 00 01");
+    CHECK(strstr(buf, "double-long") != NULL, "render2: INT32 名为 double-long");
+    //   BOOLEAN true  →  行1 `03 01`（DLMS 里 boolean 是 0x03，不是 0x11）
+    var_init(&v);
+    v.vt = DLMS_DATA_TYPE_BOOLEAN;
+    v.boolVal = 1;
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: boolean 渲染成功");
+    CHECK(strstr(buf, "03 01") != NULL, "render2: 行1 = 03 01");
+    CHECK(strstr(buf, "Value: true") != NULL, "render2: 行2 值 true");
 }
 
 // ── 写 / action 路径的 variant 构造 ────────────────────────────────────────────
