@@ -793,9 +793,37 @@ int dlms_read(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned cha
     return ret;
 }
 
-static int buildBytesVariant(dlmsVARIANT* v, const char* hex)
+// 把原始字节装进 OCTET_STRING variant（写 / method 两条路共用）。
+//
+// ⚠️ 必须按库的约定**堆分配** byteArr。不能 var_init 之后直接 bb_clear/bb_set：
+//   · var_init() 会把 v->byteArr 置为 NULL（variant.c:297）；
+//   · bb_clear(arr) 只检查 arr->data、**不检查 arr 本身**（bytebuffer.c:678-682），
+//     所以 bb_clear(NULL) 会去读 NULL->data → 解引用空指针，直接崩溃。
+//   · 库自己的 var_addBytes() 在 vt != OCTET_STRING 时正是先 gxmalloc 出
+//     gxByteBuffer 再填数据（variant.c:246-248）—— 这里照同一约定做。
+//   （"写 / action 一点就崩"的根因，就是漏了这一步分配。）
+//   注意：分配出来的 byteArr 之后由 var_clear() 负责释放（variant.c:346-355）。
+static int setOctetStringVariant(dlmsVARIANT* v, const unsigned char* data, uint32_t size)
 {
-    // 写路径：OCTET_STRING variant 承载原始字节，byteArray=1 直传。
+    var_init(v);
+    v->byteArr = (gxByteBuffer*)gxmalloc(sizeof(gxByteBuffer));
+    if (v->byteArr == NULL)
+    {
+        return DLMS_ERROR_CODE_OUTOFMEMORY;
+    }
+    bb_init(v->byteArr);
+    v->vt = DLMS_DATA_TYPE_OCTET_STRING;
+    if (data != NULL && size > 0)
+    {
+        return bb_set(v->byteArr, data, size);
+    }
+    return DLMS_ERROR_CODE_OK;
+}
+
+// 写路径：OCTET_STRING variant 承载原始字节，byteArray=1 直传。
+// 故意不加 static：C 单测要直接调它守住"不再崩"（见 test_dlms.c 的 [writevar]）。
+int buildBytesVariant(dlmsVARIANT* v, const char* hex)
+{
     gxByteBuffer payload;
     bb_init(&payload);
     if (hex != NULL && *hex != '\0')
@@ -807,12 +835,9 @@ static int buildBytesVariant(dlmsVARIANT* v, const char* hex)
             return r;
         }
     }
-    var_init(v);
-    v->vt = DLMS_DATA_TYPE_OCTET_STRING;
-    bb_clear(v->byteArr);
-    bb_set(v->byteArr, payload.data, payload.size);
+    int r = setOctetStringVariant(v, payload.data, payload.size);
     bb_clear(&payload);
-    return DLMS_ERROR_CODE_OK;
+    return r;
 }
 
 int dlms_write(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned char attr,
@@ -849,7 +874,8 @@ int dlms_write(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned ch
 }
 
 // 按 P1 tag 集把 hex 解析为 variant（供 method）。
-static int buildVariantFromHex(const char* hex, dlmsVARIANT* v)
+// 故意不加 static：C 单测直接调它守住"不再崩"（见 test_dlms.c 的 [writevar]）。
+int buildVariantFromHex(const char* hex, dlmsVARIANT* v)
 {
     gxByteBuffer b;
     bb_init(&b);
@@ -937,12 +963,11 @@ static int buildVariantFromHex(const char* hex, dlmsVARIANT* v)
         }
         break;
     case DLMS_DATA_TYPE_OCTET_STRING:
-    {
-        var_init(v);
-        v->vt = DLMS_DATA_TYPE_OCTET_STRING;
-        r = var_addBytes(v, &b.data[1], (uint16_t)(b.size - 1));
+        // 与写路径同一个坑：不能先 var_init 再把 vt 设成 OCTET_STRING ——
+        // 那样 var_addBytes() 会走 else 分支，对仍为 NULL 的 byteArr 调 bb_clear → 崩。
+        // 统一交给 setOctetStringVariant 显式堆分配（见其注释）。
+        r = setOctetStringVariant(v, &b.data[1], b.size - 1);
         break;
-    }
     default:
         r = DLMS_ERROR_CODE_INVALID_PARAMETER;
         break;

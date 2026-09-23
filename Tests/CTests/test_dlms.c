@@ -243,10 +243,15 @@ static void test_initialize_replay(void)
     dlms_set_security(c, DLMS_SECURITY_NONE,
                       "00000000000000000000000000000000",
                       "00000000000000000000000000000000", NULL);
+    printf("  · set_security ok\n");
     dlms_set_clientSystemTitle(c, "4142433132333435");                          // "ABC12345"
+    printf("  · set_clientSystemTitle ok\n");
     dlms_set_io(c, &r, replaySend, replayRecv);
+    printf("  · set_io ok\n");
 
+    printf("  · 调 dlms_initialize …\n");
     ret = dlms_initialize(c);          // ★ 这一步就是真机上崩溃/失败的地方
+    printf("  · dlms_initialize 返回 %d\n", ret);
     step = dlms_lastStep(c);
 
     // ① 不崩溃（旧代码在此处 var_clear 释放栈地址 → abort）
@@ -350,6 +355,75 @@ static void test_render(void)
     CHECK(dlms_renderValue(&v, buf, &len) == 0, "render: cap=0 安全");
 }
 
+// ── 写 / action 路径的 variant 构造 ────────────────────────────────────────────
+// 真机崩溃根因：var_init() 把 byteArr 置为 NULL 之后，
+//   · 写路径  直接 bb_clear(v->byteArr)                    → 空指针解引用
+//   · method  先把 vt 设成 OCTET_STRING 再 var_addBytes()  → 走 else 分支同样 bb_clear(NULL)
+// bb_clear() 只检查 arr->data、不检查 arr 本身（bytebuffer.c:678-682）。
+//
+// 下面两个函数在桥接层故意不加 static，便于直接断言。
+// 生产路径：dlms_write → buildBytesVariant ； dlms_method → buildVariantFromHex。
+int buildBytesVariant(dlmsVARIANT* v, const char* hex);
+int buildVariantFromHex(const char* hex, dlmsVARIANT* v);
+
+static void test_writevar(void)
+{
+    dlmsVARIANT v;
+    int r;
+
+    // ① 写路径：正常数据。除"不崩"外还要验 byteArr 是**堆分配**的 ——
+    //    紧随其后的 var_clear() 会 free 它；若是栈缓冲，这一步就非法释放了。
+    r = buildBytesVariant(&v, "0102030405");
+    CHECK(r == DLMS_ERROR_CODE_OK, "writevar: buildBytesVariant 不再崩");
+    CHECK(v.vt == DLMS_DATA_TYPE_OCTET_STRING, "writevar: vt = octet-string");
+    CHECK(v.byteArr != NULL, "writevar: byteArr 已分配（不再是 NULL）");
+    CHECK(v.byteArr != NULL && v.byteArr->size == 5, "writevar: 承载 5 字节");
+    CHECK(v.byteArr != NULL && v.byteArr->data[0] == 0x01 && v.byteArr->data[4] == 0x05,
+          "writevar: 字节内容正确（首尾）");
+    var_clear(&v);                       // ← 堆分配才能安全释放（旧代码在此 abort）
+
+    // ② 空 hex → 空 octet-string（"写空值"是合法输入）
+    r = buildBytesVariant(&v, "");
+    CHECK(r == DLMS_ERROR_CODE_OK, "writevar: 空 hex 不崩");
+    CHECK(v.byteArr != NULL && v.byteArr->size == 0, "writevar: 空 hex → size 0 且已分配");
+    var_clear(&v);
+
+    // ③ hex 传 NULL（等价空值）
+    r = buildBytesVariant(&v, NULL);
+    CHECK(r == DLMS_ERROR_CODE_OK, "writevar: NULL hex 不崩");
+    var_clear(&v);
+
+    // ④ 非法 hex：**库的 bb_addHexString 对非十六进制字符静默容忍**（不返回错误），
+    //    结果是字节数变少、全非法时为 0 —— 桥接层的 hexToBytes 只是透传返回值，
+    //    所以这里不会报错。故只断言"不崩 + 仍得到可安全释放的合法 variant"。
+    //    （用户输入合法性由 Swift 侧 HexUtil.isValid 校验；桥接层这处静默容忍是已知点。）
+    r = buildBytesVariant(&v, "ZZ");
+    CHECK(r == DLMS_ERROR_CODE_OK, "writevar: 非法 hex 被库静默容忍（不报错，已知）");
+    CHECK(v.vt == DLMS_DATA_TYPE_OCTET_STRING && v.byteArr != NULL,
+          "writevar: 非法 hex 仍得到可安全释放的 variant");
+    var_clear(&v);
+
+    // ⑤ method / action 路径：OCTET_STRING tag（09 + 数据）—— 与写路径同一个坑
+    r = buildVariantFromHex("090801020304050607", &v);
+    CHECK(r == DLMS_ERROR_CODE_OK, "writevar: buildVariantFromHex(09) 不再崩");
+    CHECK(v.vt == DLMS_DATA_TYPE_OCTET_STRING, "writevar: method 参数为 octet-string");
+    CHECK(v.byteArr != NULL && v.byteArr->size == 8, "writevar: method 参数 8 字节");
+    CHECK(v.byteArr != NULL && v.byteArr->data[0] == 0x08 && v.byteArr->data[7] == 0x07,
+          "writevar: method 参数字节正确（首尾）");
+    var_clear(&v);
+
+    // ⑥ method 路径：整型 tag（本就不走 OCTET_STRING 分支，回归确认没被改坏）
+    r = buildVariantFromHex("1201F3", &v);
+    CHECK(r == DLMS_ERROR_CODE_OK && v.vt == DLMS_DATA_TYPE_UINT16 && v.uiVal == 0x01F3,
+          "writevar: buildVariantFromHex(12) → uint16 0x01F3");
+    var_clear(&v);
+
+    // ⑦ method 路径：空 hex → 无参方法
+    r = buildVariantFromHex("", &v);
+    CHECK(r == DLMS_ERROR_CODE_OK && v.vt == DLMS_DATA_TYPE_NONE, "writevar: 空 hex → 无参方法");
+    var_clear(&v);
+}
+
 int main(void)
 {
     // 关掉 stdout 缓冲：万一后面崩溃，已打印的内容才不会跟着丢掉（排查用）。
@@ -358,10 +432,12 @@ int main(void)
     printf("[ctx]\n"); test_ctx();
     printf("[variant]\n"); test_variant();
     printf("[render]\n"); test_render();
-    // ⚠️ 回放测试当前会崩溃（正在排查：是 HLS 修复仍不稳，还是库在该路径下有问题）。
-    // 默认不跑，避免弄红 CI；需要时用 DLMS_TEST_REPLAY=1 手动启用：
-    //   DLMS_TEST_REPLAY=1 ./test_dlms
-    // 已经确认它能跑起来并发出前三帧（SNRM/AARQ/HLS），崩溃点在 HLS 之后。
+    printf("[writevar]\n"); test_writevar();
+    // ⚠️ 回放测试当前会**挂住**（不是崩溃）：set_security / set_clientSystemTitle / set_io
+    //    都正常返回，进入 dlms_initialize 后就不再回来（疑在收发重试/分帧循环里）。
+    //    （上一轮记录的"崩在 set_security"是误判 —— 加了逐句打印后每步都打印出来了。）
+    //    默认不跑，避免 CI 卡死；需要时用 DLMS_TEST_REPLAY=1 手动启用：
+    //      DLMS_TEST_REPLAY=1 ./test_dlms
     if (getenv("DLMS_TEST_REPLAY") != NULL)
     {
         printf("[replay]\n"); test_initialize_replay();
