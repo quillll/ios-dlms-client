@@ -345,6 +345,53 @@ final class ObisItemCodableTests: XCTestCase {
     }
 }
 
+/// 预读缓冲的取用逻辑。
+///
+/// 这是防「写爆 C 侧 2048 字节栈缓冲」的关键一步：调用方给的缓冲固定大小，
+/// 而 Swift 侧 `copyBytes` 不做边界检查。旧实现整份排空 `pending` →
+/// 超时挂起的多个 completion 累积起来的数据被一次性写入 → 栈破坏。
+final class TransportPendingTests: XCTestCase {
+    func testTakeTruncatesToMax() {
+        var buf = Data([1, 2, 3, 4, 5, 6])
+        let out = GXDLMSTransport.takePending(&buf, max: 4)
+        XCTAssertEqual([UInt8](out), [1, 2, 3, 4])   // 只取 max 个
+        XCTAssertEqual([UInt8](buf), [5, 6])         // 余量**留在**缓冲里
+    }
+
+    func testTakeReturnsAllWhenSmallerThanMax() {
+        var buf = Data([1, 2, 3])
+        let out = GXDLMSTransport.takePending(&buf, max: 2048)
+        XCTAssertEqual([UInt8](out), [1, 2, 3])
+        XCTAssertTrue(buf.isEmpty)
+    }
+
+    func testTakeEmptyBuffer() {
+        var buf = Data()
+        XCTAssertTrue(GXDLMSTransport.takePending(&buf, max: 10).isEmpty)
+        XCTAssertTrue(buf.isEmpty)
+    }
+
+    /// 连续取用必须能拼回原数据（不丢不重）——
+    /// 这正是「分片 + 超时叠加」场景的核心契约。
+    func testSuccessiveTakesReassembleOriginal() {
+        let original = Data((0..<10).map { UInt8($0) })
+        var buf = original
+        let first = GXDLMSTransport.takePending(&buf, max: 4)
+        let second = GXDLMSTransport.takePending(&buf, max: 4)
+        let third = GXDLMSTransport.takePending(&buf, max: 4)
+        XCTAssertEqual(first + second + third, original)
+        XCTAssertTrue(buf.isEmpty)
+    }
+
+    /// 单次取用**永远不超过 max** —— 旧的"整份排空"就是在这条上失守的。
+    func testNeverExceedsMax() {
+        var buf = Data(repeating: 0xAB, count: 8192)   // 4 个 2048 的 completion 堆在一起
+        let out = GXDLMSTransport.takePending(&buf, max: 2048)
+        XCTAssertLessThanOrEqual(out.count, 2048)
+        XCTAssertEqual(buf.count, 8192 - 2048)
+    }
+}
+
 final class ConfigCodableTests: XCTestCase {
     /// 旧存档（缺新字段、且含已删除的 akekHex）不应让整份配置被重置回默认。
     func testDecodeLegacyJSONKeepsExistingValues() throws {

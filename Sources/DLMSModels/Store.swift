@@ -24,14 +24,19 @@ final class Store: ObservableObject {
     @Published var parseEntries: [String] = []
     /// 解析历史条数上限（与 logs 同理，防长会话无限增长）。
     static let parseEntryLimit = 200
+    /// 高水位：与 `logs` 同一套做法 —— 超了才一次性裁回上限。
+    /// 原来这里是「每次追加超限即 `removeFirst(k)`」，count 刚过上限时每条都要
+    /// O(n) 搬移；虽然解析追加频率低（每次操作 1 条），但两套口径不一致容易被
+    /// 后来人当成范本抄回去。
+    private static let parseHighWater = 250
 
     /// 追加一条解析结果（空白串忽略）。
     func appendParsed(_ block: String) {
         let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         parseEntries.append(trimmed)
-        if parseEntries.count > Store.parseEntryLimit {
-            parseEntries.removeFirst(parseEntries.count - Store.parseEntryLimit)
+        if parseEntries.count > Store.parseHighWater {
+            parseEntries = Array(parseEntries.suffix(Store.parseEntryLimit))
         }
     }
 
@@ -47,16 +52,29 @@ final class Store: ObservableObject {
         fileURLs = (dir.appendingPathComponent("config.json"),
                     dir.appendingPathComponent("obis.json"),
                     dir.appendingPathComponent("recent.json"))
-        config = Store.load(fileURLs.config) ?? ConnectionConfig()
-        obisLibrary = Store.load(fileURLs.obis) ?? ObisItem.presets
-        recentObis = Store.load(fileURLs.recent) ?? []
+        // 文件损坏时**别静默回退**：原来 `try?` 吞掉错误，用户只会看到
+        //「设置莫名被重置 / 清单莫名变回预置」，无从排查。这里收集起来记一条 warn。
+        var problems: [String] = []
+        config = Store.load(fileURLs.config, name: "config.json", problems: &problems) ?? ConnectionConfig()
+        obisLibrary = Store.load(fileURLs.obis, name: "obis.json", problems: &problems) ?? ObisItem.presets
+        recentObis = Store.load(fileURLs.recent, name: "recent.json", problems: &problems) ?? []
+        for p in problems { log(.info, p, level: .warn) }
     }
 
     // MARK: - 持久化
 
-    private static func load<T: Decodable>(_ url: URL) -> T? {
+    /// 读一个 JSON 文件。
+    /// - 文件不存在（首次运行）→ 静默返回 nil，交给调用方用默认值，**不算问题**。
+    /// - 文件存在但解析失败 → 收集一条说明到 `problems`，调用方记 warn 日志。
+    ///   （原来是 `try?` 一把吞掉，坏了也无从知道。）
+    private static func load<T: Decodable>(_ url: URL, name: String, problems: inout [String]) -> T? {
         guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            problems.append("\(name) 读取失败，已回退默认值：\(error.localizedDescription)")
+            return nil
+        }
     }
     /// 写盘队列：**串行** + **原子写**。
     /// 串行是为了保证「后一次 persist 覆盖前一次」的顺序不被异步打乱

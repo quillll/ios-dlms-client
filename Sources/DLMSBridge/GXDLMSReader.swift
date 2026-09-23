@@ -27,8 +27,11 @@ private let dlmsTransportRecv: dlmsRecvFn = { user, buf, cap, got in
     guard let user, let buf, let got, cap > 0 else { return -1 }
     let t: GXDLMSTransport = Unmanaged.fromOpaque(user).takeUnretainedValue()
     guard let d = t.receive(max: Int(cap)) else { return -1 }
-    d.copyBytes(to: buf, count: d.count)
-    got.pointee = Int32(d.count)
+    // 兜底夹紧：`buf` 是 C 侧固定大小的栈数组，而 `copyBytes` 不做边界检查。
+    // `receive` 已按 cap 截断，这里再挡一道，防止将来换实现时把这条约束丢掉。
+    let n = min(Int(cap), d.count)
+    d.copyBytes(to: buf, count: n)
+    got.pointee = Int32(n)
     return 0
 }
 
@@ -42,8 +45,6 @@ private let dlmsTransportTrace: dlmsTraceFn = { user, dir, frame, len in
 // MARK: - 抄读器
 
 final class GXDLMSReader {
-    private enum Kind { case connectOnly, read, write, method }
-
     private let config: ConnectionConfig
     private let transport: GXDLMSTransport
     private let workQueue = DispatchQueue(label: "dlms.reader.work")
@@ -217,9 +218,6 @@ final class GXDLMSReader {
         return text
     }
 
-    private func check(_ code: Int32, step: String) throws {
-        guard code == 0 else { throw DLMSReaderError.step("\(step)失败: \(errorText(code))") }
-    }
     private func errorText(_ code: Int32) -> String {
         if let p = dlms_error_string(code) { return String(cString: p) }
         return "\(code)"

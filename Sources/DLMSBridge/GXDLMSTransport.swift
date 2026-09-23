@@ -22,6 +22,14 @@ final class GXDLMSTransport {
     var recvTimeoutMs: Int = 3000
     /// 连接超时（ms）。
     var connectTimeoutMs: Int = 5000
+    /// 预读缓冲的字节上限，与 C 侧 `DLMS_MAX_RX_BYTES`(256KB) 对齐。
+    ///
+    /// 为什么需要这道闸门：`connection.receive` 的 completion 在超时后**无法取消**
+    ///（Network.framework 没有"取消单个 receive"的 API，只能 cancel 整个连接），
+    /// 所以 C 层每超时重试一次就多留一个挂起的 completion
+    /// （`dlmsSendFrame` 允许重试到 `DLMS_MAX_RECV_ROUNDS = 256`）。
+    /// 对端一次发来长数据时它们会接连触发、把数据全塞进 `pending` —— 没有上限就能长到几百 KB。
+    private static let pendingLimit = 256 * 1024
 
     // MARK: - 连接
 
@@ -74,13 +82,17 @@ final class GXDLMSTransport {
     }
 
     func receive(max: Int) -> Data? {
-        guard let connection = conn else { return nil }
+        guard let connection = conn, max > 0 else { return nil }
 
         // 先把上一轮"晚到"攒下的字节消费掉，避免白白再等一次（也避免丢数据）。
+        // ⚠️ 必须按 `max` **截断**、余量留在缓冲里：调用方（C 桥接）给的接收缓冲是
+        // 固定的栈数组（`DLMSBridge.c` 的 `unsigned char tmp[2048]`），而 Swift 侧
+        // `copyBytes(to:count:)` 是无边界检查写入 —— 整份排空会直接写爆它。
+        // 而且超时后挂起的 completion 会累积多个（见 `pendingLimit` 注释），
+        // 一次排空完全可能远大于 `max`。
         pendingLock.lock()
         if !pending.isEmpty {
-            let data = pending
-            pending = Data()
+            let data = Self.takePending(&pending, max: max)
             pendingLock.unlock()
             return data
         }
@@ -91,9 +103,7 @@ final class GXDLMSTransport {
             // 关键改动：**无论本次是否已经超时**，收到的字节都先入队。
             // 超时了也不丢 —— C 层下一轮 recv 会在开头从 pending 里取到它。
             if let data, !data.isEmpty {
-                self.pendingLock.lock()
-                self.pending.append(data)
-                self.pendingLock.unlock()
+                self.appendPending(data)
             }
             sem.signal()
         }
@@ -104,10 +114,34 @@ final class GXDLMSTransport {
             pendingLock.unlock()
             return nil          // 真没数据：C 层按重试处理
         }
-        let data = pending
-        pending = Data()
+        let data = Self.takePending(&pending, max: max)
         pendingLock.unlock()
         return data
+    }
+
+    /// 从 `pending` 头部取出至多 `max` 字节，**余量留在缓冲里**供下次取用
+    ///（这才符合"预读"的语义；旧实现整份排空，是 N1 栈溢出的直接原因）。
+    /// 复制一份而不是返回 slice，避免一小段数据把整块底层存储留住。
+    ///
+    /// 刻意**不加 `private`** —— 单测要直接断言它（这是防栈溢出的关键一步，
+    /// 而 `GXDLMSTransport` 依赖 Network.framework，端到端不好在单测里跑）。
+    static func takePending(_ buf: inout Data, max: Int) -> Data {
+        let n = min(max, buf.count)
+        let out = Data(buf.prefix(n))
+        buf.removeFirst(n)
+        return out
+    }
+
+    /// 预读入队，并守住字节上限。
+    /// 超限时**丢弃最旧的** —— 走到这一步说明对端在异常推送，新数据更可能是
+    /// 当前请求的响应；丢老数据能让 C 层通过超时重试自然重来，而不是无限涨内存。
+    private func appendPending(_ data: Data) {
+        pendingLock.lock()
+        pending.append(data)
+        if pending.count > Self.pendingLimit {
+            pending.removeFirst(pending.count - Self.pendingLimit)
+        }
+        pendingLock.unlock()
     }
 
     func cancel() {
