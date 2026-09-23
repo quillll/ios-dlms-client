@@ -115,6 +115,11 @@ static unsigned short fcs16(const unsigned char* p, int n)
 
 #define RP_TX_MAX 16
 #define RP_TX_CAP 512
+// 桩硬上限：超过即判"被测代码的收发循环未收敛"，并强制失败。
+// 加它的直接原因：曾出现测试挂住 17 分钟 —— 被测代码死循环 + 桩"永远有响应"，
+// 两边都不收敛，只能靠 Ctrl-C。有了上限，最坏情况变成"几秒内失败并给出提示"。
+#define RP_STUB_MAX 200
+#define RP_TRACE_MAX 16        // 只打印前 N 次收发，便于看清循环形态
 
 typedef struct
 {
@@ -125,7 +130,20 @@ typedef struct
     int rxLen[8];
     int rxCount;
     int sends;
+    int recvs;                                // 诊断：recv 被调用总次数
 } Replay;
+
+// 超限提示只打一次，避免刷屏
+static void rpNoteOver(const char* what)
+{
+    static int warned = 0;
+    if (warned == 0)
+    {
+        warned = 1;
+        printf("  !! %s 已达上限 %d 次 —— 被测代码的收发循环未收敛（已强制失败，不再继续）\n",
+               what, RP_STUB_MAX);
+    }
+}
 
 static int replaySend(void* user, const unsigned char* data, int len)
 {
@@ -137,7 +155,9 @@ static int replaySend(void* user, const unsigned char* data, int len)
         r->txCount++;
     }
     r->sends++;
-    return 0;                                 // 永远"发送成功"
+    if (r->sends <= RP_TRACE_MAX) { printf("     [stub] send#%d len=%d\n", r->sends, len); }
+    if (r->sends > RP_STUB_MAX) { rpNoteOver("send"); return -1; }
+    return 0;                                 // 否则"发送成功"
 }
 
 static int replayRecv(void* user, unsigned char* buf, int cap, int* got)
@@ -145,32 +165,54 @@ static int replayRecv(void* user, unsigned char* buf, int cap, int* got)
     Replay* r = (Replay*)user;
     int idx = r->sends - 1;                   // 第 N 次 send 对应第 N 份响应
     int n;
-    if (idx < 0 || idx >= r->rxCount) { if (got != NULL) { *got = 0; } return -1; }
+    r->recvs++;
+    if (r->recvs > RP_STUB_MAX)
+    {
+        rpNoteOver("recv");
+        if (got != NULL) { *got = 0; }
+        return -1;
+    }
+    if (idx < 0 || idx >= r->rxCount)
+    {
+        if (r->recvs <= RP_TRACE_MAX) { printf("     [stub] recv#%d idx=%d 无料\n", r->recvs, idx); }
+        if (got != NULL) { *got = 0; }
+        return -1;
+    }
     n = r->rxLen[idx];
     if (n > cap) { n = cap; }
     memcpy(buf, r->rx[idx], (size_t)n);
     if (got != NULL) { *got = (int)n; }
+    if (r->recvs <= RP_TRACE_MAX) { printf("     [stub] recv#%d idx=%d n=%d\n", r->recvs, idx, n); }
     return 0;
 }
 
-// 用「内容 + 自算 FCS」拼一帧 HDLC：7E | A0 len dst src ctrl HCS... info FCS 7E
+// 用「内容 + 自算 HCS/FCS」拼一帧 HDLC：7E | A0 len dst src ctrl HCS(2) info FCS(2) 7E
+//
+// ⚠️ 这里有个坑，曾让回放测试死循环（表现是"挂住"而非崩溃）：
+//   **HCS 必须覆盖真实的长度字节**。若先用 0x00 占位算 HCS、之后再回填长度，
+//   HCS 就是错的 → 库的 HCS 校验不过（dlms.c:3023）→ dlms_getHdlcData 跳过该帧、
+//   把游标推到帧尾（dlms.c:3007/3027）→ 递归进去时"数据不够"→ complete=0 返回
+//   → 外层收发循环永不退出（且 rx 缓冲每轮追加一帧，内存持续增长）。
+//   已用现场 UA 帧独立验证：HCS(A0 1E 03 03 73) = 0xCC40 → 线上 40 CC ✓ 与抓包一致；
+//   而用占位 0x00 算得 0xA1A3 ✗。
+//   另一条经验：**FCS 要覆盖整个帧体**，所以它必须在长度回填之后才算（顺序本来就对）。
 static int buildHdlc(unsigned char* out, unsigned char control,
                      const unsigned char* info, int infoLen)
 {
-    unsigned char body[256];
+    unsigned char body[512];
     unsigned short hcs, f;
     int n = 0, m = 0, i;
+    int total = 5 + 2 + infoLen + 2;          // A0,len,dst,src,ctrl + HCS(2) + info + FCS(2)
     body[n++] = 0xA0;                         // frame format
-    body[n++] = 0x00;                         // 长度占位，稍后回填
+    body[n++] = (unsigned char)total;         // ★ 长度先定死：HCS 要覆盖它
     body[n++] = 0x03;                         // 目的地址 0x0001（7bit 编码）
     body[n++] = 0x03;                         // 源地址   0x0001
     body[n++] = control;
-    hcs = fcs16(body, n);                     // HCS 覆盖 frame-format..control
+    hcs = fcs16(body, n);                     // HCS 覆盖 frame-format..control（含长度）
     body[n++] = (unsigned char)(hcs & 0xFF);
     body[n++] = (unsigned char)((hcs >> 8) & 0xFF);
     for (i = 0; i < infoLen; i++) { body[n++] = info[i]; }
-    body[1] = (unsigned char)(n + 2);         // 长度 = 帧体 + FCS 两字节
-    f = fcs16(body, n);
+    f = fcs16(body, n);                       // FCS 覆盖整个帧体
     out[m++] = 0x7E;
     for (i = 0; i < n; i++) { out[m++] = body[i]; }
     out[m++] = (unsigned char)(f & 0xFF);
@@ -252,6 +294,8 @@ static void test_initialize_replay(void)
     printf("  · 调 dlms_initialize …\n");
     ret = dlms_initialize(c);          // ★ 这一步就是真机上崩溃/失败的地方
     printf("  · dlms_initialize 返回 %d\n", ret);
+    printf("  · 桩统计: send=%d 次, recv=%d 次, 记录到的出向帧=%d 个\n",
+           r.sends, r.recvs, r.txCount);
     step = dlms_lastStep(c);
 
     // ① 不崩溃（旧代码在此处 var_clear 释放栈地址 → abort）
@@ -433,11 +477,11 @@ int main(void)
     printf("[variant]\n"); test_variant();
     printf("[render]\n"); test_render();
     printf("[writevar]\n"); test_writevar();
-    // ⚠️ 回放测试当前会**挂住**（不是崩溃）：set_security / set_clientSystemTitle / set_io
-    //    都正常返回，进入 dlms_initialize 后就不再回来（疑在收发重试/分帧循环里）。
-    //    （上一轮记录的"崩在 set_security"是误判 —— 加了逐句打印后每步都打印出来了。）
-    //    默认不跑，避免 CI 卡死；需要时用 DLMS_TEST_REPLAY=1 手动启用：
-    //      DLMS_TEST_REPLAY=1 ./test_dlms
+    // 回放测试：桩 send/recv + **自造**合法帧，跑 dlms_initialize 的完整协议流程
+    //（SNRM/UA → AARQ/AARE → HLS 应答），覆盖到此前从未被调用的路径。
+    // 实测覆盖率：dlms_initialize 0% → 85%，桥接层 34.83% → 56.31%。
+    // 环境变量门是排查期为"不影响 CI"加的；死循环（HCS 算错导致）已修复并通过，
+    // **是否转为常规闸门待用户确认**。
     if (getenv("DLMS_TEST_REPLAY") != NULL)
     {
         printf("[replay]\n"); test_initialize_replay();

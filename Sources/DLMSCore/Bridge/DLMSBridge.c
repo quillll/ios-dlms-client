@@ -86,10 +86,22 @@ static int bufAppend(dlmsCtx* c, const unsigned char* src, uint32_t len)
     return bb_insert(src, len, rx, rx->size);
 }
 
+// 单帧接收的**总轮次上限**。
+//
+// 为什么必须有：下面的 do-while 只有两个退出条件 —— ① recv 连续失败 4 次；
+// ② reply->complete 置位。而 `fail` 在"收到数据"时会被归零（见循环内 D2 的说明），
+// 于是**对端只要持续有字节到达、却始终构不成一个会被接受的帧**（垃圾数据、别的表的
+// 应答、共享 TCP 流上的其它报文、或帧号/CRC 校验不过的帧），两个条件就都不成立 →
+// 无限循环，而且 rx 缓冲每轮都在追加 → 内存持续增长。
+// 真机上这是"异常对端/弱网"场景，会让 App 卡死（不是报错）；本地表现为测试挂住。
+// 256 轮远大于正常需求（64KB 响应按 1448B 分段也才 ~45 轮），不会误伤大帧。
+#define DLMS_MAX_RECV_ROUNDS 256
+
 // 发送一个请求缓冲，循环接收直到 reply->complete（Gurux readDLMSPacket 逻辑）。
 static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
 {
     int ret, fail = 0;
+    int rounds = 0;
     if (data->size == 0)
     {
         return DLMS_ERROR_CODE_OK;
@@ -120,6 +132,12 @@ static int dlmsSendFrame(dlmsCtx* c, gxByteBuffer* data, gxReplyData* reply)
     do
     {
         int got = 0;
+        if (++rounds > DLMS_MAX_RECV_ROUNDS)
+        {
+            // 有字节持续到达但始终构不成一帧 → 有界退出（防死循环 + 内存增长）。
+            ret = DLMS_ERROR_CODE_RECEIVE_FAILED;
+            break;
+        }
         if (c->recv(c->user, tmp, (int)sizeof(tmp), &got) != 0 || got <= 0)
         {
             if (++fail > 3)
