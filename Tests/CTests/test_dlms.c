@@ -480,9 +480,10 @@ int main(void)
     // 回放测试：桩 send/recv + **自造**合法帧，跑 dlms_initialize 的完整协议流程
     //（SNRM/UA → AARQ/AARE → HLS 应答），覆盖到此前从未被调用的路径。
     // 实测覆盖率：dlms_initialize 0% → 85%，桥接层 34.83% → 56.31%。
-    // 环境变量门是排查期为"不影响 CI"加的；死循环（HCS 算错导致）已修复并通过，
-    // **是否转为常规闸门待用户确认**。
-    if (getenv("DLMS_TEST_REPLAY") != NULL)
+    // **已转为常规闸门** —— 原先的 DLMS_TEST_REPLAY 门是"它会挂住"时的隔离措施，
+    // 而挂住的根因是 buildHdlc 的 HCS 算错（见该函数注释），已修复。
+    // 需要临时跳过时设 DLMS_SKIP_REPLAY=1。
+    if (getenv("DLMS_SKIP_REPLAY") == NULL)
     {
         printf("[replay]\n"); test_initialize_replay();
     }
