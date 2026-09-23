@@ -282,9 +282,11 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
             serverAddressHex = storedAddress   // 键存在（含用户清空的空串）→ 原样保留
         } else {
             // 旧键走独立的 LegacyKeys（它不在 CodingKeys 里，所以编码时不会被写出）。
-            // 注意 `Decoder.container(keyedBy:)` 本身不抛，别在那里套 `try?`。
+            // ⚠️ `Decoder.container(keyedBy:)` **是 throws 的**（与 `Encoder` 的同名方法**不对称**：
+            //    编码侧 `encoder.container(keyedBy:)` 不抛）。别凭记忆写 —— 本文件
+            //    `init(from:)` 的第一行 `try decoder.container(keyedBy: CodingKeys.self)` 就是现成反例。
             var legacy: UInt32 = 0x00013FFF
-            let legacyContainer = decoder.container(keyedBy: LegacyKeys.self)
+            let legacyContainer = try decoder.container(keyedBy: LegacyKeys.self)
             var oldAddress: UInt32?
             do {
                 oldAddress = try legacyContainer.decodeIfPresent(UInt32.self, forKey: .serverAddress)

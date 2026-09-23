@@ -42,6 +42,7 @@
 | 7 | 改 `Codable` 结构体字段 | 必须同步手写 `init(from:)`，**合成解码对「缺键 + 非 Optional」照样抛错** → 旧 JSON 整份失效、用户数据被静默重置 | R19 / R28 同源 |
 | 8 | 把"只读不写"的旧键放进 `CodingKeys` | **不能** ✗ —— 合成 `encode(to:)` 会为**每一个 case** 去找同名存储属性，找不到就整份不满足 `Encodable`，而报错只落在 struct 声明行（**完全指不到那个 case**）。旧键要另开一个 enum（如 `LegacyKeys`）**只用于解码** | CI 红两次（R32） |
 | 9 | 写 `try?` 时按"会嵌套成双层 Optional"推理 | **Swift 5 起 `try?` 对已是 Optional 的结果会 flatten**（SE-0230）→ `try? f()` 的类型就是 `T?`，别再写第二个 `let`（`if let x = try? f(), let x` ✗）。**本机没有编译器时，宁可换成 `do/catch`** —— 多两行，换零歧义 | CI 又红一轮（R33） |
+| 10 | 某个 API 是否 `throws` / 是否 Optional，**凭记忆判断** | **别猜** —— ① **同文件/同项目里往往就有现成反例**：这次的 `try decoder.container(keyedBy:)` 就在**同一函数的第一行**，照抄即可；② 可用 CI 的报错反推（CI **没报**某行 ⇒ 那行的写法是对的）。<br>**具体事实（两侧不对称）**：`Decoder.container(keyedBy:)` **是 `throws`**，`Encoder.container(keyedBy:)` **不是** | CI 又红一轮（R34） |
 
 ---
 
@@ -595,6 +596,7 @@ python3 tools/chk_codingkeys.py <repo根> # 显式指定
 | **R31** | **测试脚手架 `buildHdlc` 的 HCS 算错**（先用 `0x00` 占位算 HCS、之后才回填长度，而 HDLC 的 **HCS 必须覆盖真实长度字节**）→ 库校验不过**静默跳过该帧** → `reply->complete` 恒为 0 → `dlmsSendFrame` **死循环**（`fail` 在"收到数据"时归零，唯一守卫失效） | **已修 ✓**（`af449aa`）。先定长再算 HCS。**用现场真实 UA 帧独立验证**：`HCS(A0 1E 03 03 73)=CC40` → 线上 `40 CC` ✓ 与抓包一致。生产侧同时加 `DLMS_MAX_RECV_ROUNDS=256` 兜底（防"对端持续吐数据却构不成可接受帧"）|
 | **R32** | **`CodingKeys` 里放了没有对应存储属性的键** → 合成的 `encode(to:)` 为每个 case 找同名属性、找不到就整份不满足 `Encodable`；**报错只落在 struct 声明行，完全指不到那个 case** | **已修 ✓**（`f...`，2026-09-24）。已淘汰、只读不写的旧键移到独立的 `LegacyKeys`（只解码不编码）。**CI 为此红过两次**（先是 `serverAddressWidth`，半修后又栽在 `serverAddress`）；判据已写成脚本 `tools/chk_codingkeys.py` 可在本地/CI 拦住 —— **见 §10.4** |
 | **R33** | **本机没有编译器时"猜语言行为"** —— 这次是 `try?` 的 flatten 语义（SE-0230）：`try? f()` 对已是 Optional 的结果**不再嵌套**，写成 `if let x = try? f(), let x` 会报 "must have Optional type" | **已修 ✓**（`29b5b19`）改用 `do/catch` 避开歧义。**规则：本机编不了 Swift 时，一律写最朴素的等价形式**（拆步赋值、显式类型、避免 `try?` + 条件绑定组合）。同类已全项目排查：`try?` 只剩 4 处、全为单层 `guard let` ✓ |
+| **R34** | **凭记忆判断 API 是否 `throws`** —— `Decoder.container(keyedBy:)` **是 `throws`**（`Encoder.container(keyedBy:)` **不是**，两侧不对称），漏写 `try` 报 "call can throw but is not marked with 'try'" | **已修 ✓**（`f...`）。**判据优先级**：① 同文件/同项目里的现成用法（这次的正确写法就在同一函数第一行，照抄即可）② CI 报错反推（**没报**的行 ⇒ 写法是对的）③ 最后才是查文档/记忆 |
 
 
 ---
