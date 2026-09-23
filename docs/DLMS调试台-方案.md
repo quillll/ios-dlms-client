@@ -1,31 +1,45 @@
-# DLMS 抄表调试台 iOS —— 详细方案（v1.4）
+# DLMS 抄表调试台 iOS —— 详细方案（v1.7）
 
-> 状态：**App 已在真机侧载运行**（CI 三道闸门全绿 → 出未签名 IPA → Windows 用 Sideloadly + 免费 Apple ID 装机成功）。
-> v1.4 变更（UI 交互细化 + 本轮审核发现）：
-> ⑨ §3.1 **类改为输入框**（不用下拉：COSEM 类实际可能非常多，下拉无法穷举），支持 10/16 进制自动识别；`ObisItem.objectClass` 由受限枚举改为**任意 Int**；
-> ⑩ 新增 **§3.2 地址输入规则**：HDLC 客户端「非自定义只读、仅自定义可输入、1 字节 = 2 位 hex、可省前导 0」；通信地址「4/2/1 字节、默认 4 字节 `00013FFF`、**不省前导 0**」；
-> ⑪ 新增 **§3.3 OBIS 添加字段顺序**：名称 → 接口类 → 逻辑名 → 属性 → 单位（可选）→ 量纲（可选）；
-> ⑫ §8 报文日志改为 **4 列固定宽度**（时间 | TX·RX | 报文类型 | HEX）。类型与 HEX **必须分列**——早前把类型拼进 HEX 串中间加两个空格，类型名长度不一（`AARQ` 4 字符 vs `Get-Response` 12 字符）会把 HEX 挤错位，这正是"TX 后两个空格导致上下不对齐"的根因；
-> ⑬ **修正报文类型表**：HDLC 控制字段以 `enums.h` 为准 —— `SNRM=0x93`、`DISC=0x53`（原误写 `0x35`/`0x40`，导致这两个报文**永远不会被标注**，且可能撞地址字段产生误标）；
-> ⑭ 整数越界由 **trap 崩溃** 改为 `clamping` 夹取（`UInt16(clamping:)`/`UInt8(clamping:)`）：类填 `99999`、属性填 `300`、端口填 `99999` 不再闪退；
-> ⑮ 风险登记新增 **R20–R24**；
-> v1.3 变更（密钥可配置化，用户口径）：
-> ⑧ 设置页密钥区改为 **GUAK / GUEK 两条独立输入**（取代原「aKEK/EM 主密钥」单条）；
->    **GUAK → `settings->cipher.authenticationKey`**，**GUEK → `settings->cipher.blockCipherKey`**；
->    两者默认均为 **16 字节全 0（AES-128）**，留空同样按全 0 处理；**MK / GBEK 暂不提供**（`dedicatedKey` 槽位预留）；
->    客户端 SystemTitle 默认改为 **`4142433031323334`（ASCII "ABC01234"）**，留空即用该默认；
->    hex 输入在交给 C 之前统一归一化（去空白与 `:` `-` 并转大写）；`ConnectionConfig` 解码改为「缺键回退默认」，
->    旧 `config.json` 不再因字段增删而整份失效。风险登记新增 **R19**。
-> v1.2 变更（原《审查与改进》已并入本文件，已对 vendored 源码核实）：
-> ① 新增 **P0 修桥**（现有 `DLMSBridge.c` 3 处 bug：接收缓冲覆盖、512B 过小、Wrapper 误发 SNRM、断链缺 RLRQ、超时未参数化）；
-> ② **修正 `cl_writeLN` 签名**（第5参 `dlmsVARIANT*`、第6参 `byteArray`，写走 `byteArray=1`+`bb_addHexString`）；
-> ③ **修正 HLS challenge** 为 `cl_getApplicationAssociationRequest/parse...Response`；
-> ④ **修正 SystemTitle 方向**：客户端→`cipher.systemTitle`、服务器→`sourceSystemTitle`(AARE回填)，此前 v1.1 写反；
-> ⑤ **修正 hex→variant tag 表**（INT8=0x0F/INT16=0x10/UINT8=0x11/UINT16=0x12/INT32=5/UINT32=6）；
-> ⑥ 新增风险 R10–R18（帧覆盖/R11 缓冲/R12 HLS/R13 客户端ST/R14 IC/R15 cip_init IC/R16 地址溢出/R17 methodLN bug/R18 wrapper SNRM）；
-> ⑦ E4 决议：**认证方式与信息加密为两个独立下拉**；认证默认 **HLS-GMAC**（审计"认证默认 NONE"**未采纳**），信息加密默认 **NONE**；认证=HLS 时客户端 SystemTitle 常显必填（R13）。
+> 状态：**App 已在真机侧载运行，并与真表完成 HLS-GMAC 关联 + 抄表**（CI 三道闸门全绿 → 出未签名 IPA → Windows 用 Sideloadly 侧载）。
+> 最新版本号 **1.2 (build 3)**（真源 `project.yml` 的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`，主界面右上角常显）。
+>
+> **v1.7 变更**（本地拟真台 + 长帧/分片根治 + 解析面板 + 地址定宽 + OBIS 数据）：
+> ㉕ **修掉「数据过长无法交互」的根因**：`bufAppend` 误用 `bb_insert` 做追加 → 分片到达时 `rx.size` 永不增长。详见 **R26**；现场四档分片矩阵复现并根治（`c6d1ff8`）；
+> ㉖ 新增**本地拟真台**：`tools/mock_meter.c`（可控分片/延迟/静默的模拟表）+ `Tests/CTests/local_e2e.c`（真 socket 端到端），`run.sh` 一条命令跑四步 → **§17**；
+> ㉗ 桥接层覆盖率 **34.83% → 70.87%**（项目总覆盖率 2.58% → 9.98%），`dlms_read/write/method/disconnect` 从 0% 全部拉起 → **§17.3**；
+> ㉘ **解析面板重做**：改**两行格式**（行 1 = 带类型的原始 HEX、行 2 = `-> Type/Value` 人类可读）、**累积 + 独立滚动 + 自动跟随**、「解析使能」**真正生效**（此前拨了没反应）、两个面板都能**满屏** → **§8**；
+> ㉙ **HDLC 通信地址宽度改为「输入字节数」决定**（1 字节=仅逻辑 / 2 字节=各 1 / 4 字节=各 2；3 字节标红），取代原「手动宽度选择器」→ **R25**、**§3.2**；
+> ㉚ **OBIS 清单新增「请求数据」字段**：Set/Action 的固定参数随条目保存，选中 OBIS 时自动填入 → **§3.3**；
+> ㉛ 修六个已核实的坑：`bufAppend` 误用 `bb_insert`（**R26**）· 写/action 崩溃（**R27**）·
+> `ObisItem` 缺容错解码（**R28**）· 预读缓冲栈溢出（**R29**）· OBIS 写法差异匹配失败（**R30**）·
+> 测试脚手架 HCS 算错导致的假死循环（**R31**）；
+> ㉜ 对《代码审核报告 v2》逐条核对 → **§18**（其中 S2 报告判错：其实早已修）。
+>
+> **v1.6 变更**（安全时序 + 可观测性）：
+> ㉒ **真表抄表失败根因定位并修复**：HLS-GMAC + `信息加密 = NONE` 时库拒绝算 GMAC → 桥接层照**官方示例手法**（临时改 `settings`、**打包前**立刻还原）切开「算 GMAC」与「打包 APDU」→ **现场真表 NONE 关联成功并抄表** → **§16**、**§5.2**、**§7.1**；
+> ㉓ 建链失败可定位到**步骤号** + 区分「发送失败」：新增 `dlms_lastStep` / `dlms_sendFailed` / `dlms_step_name`；
+> ㉔ 传输层加**预读缓冲**，止血「超时后晚到的字节永久丢失」（原 D5）。
+>
+> **v1.5 变更**：报文日志独立滚动 + 自动跟随（U1）· 结果与状态解耦（U3）· 导入补 `scaling`（U4）· 输入合法性实时提示（U5）· 修报文类型列空白（U6）→ §14。
+>
+> **v1.4 及更早**：类改输入框（10/16 进制）· 地址输入规则 · 报文 4 列固定宽度 · 修 `SNRM/DISC` tag 值 · 整数夹取 · 密钥 GUAK/GUEK 独立 · 桥接 P0 修正 → §12 风险登记 R1–R24。
+>
 > 性质：自用现场抄表 · 单表快速抄 · 近 GXDLMSDirector / 桌面 Test-Client 形态 · 仅 TCP
 > 协议层：vendor 本地 `D:\project\personal\dlms\GuruxDLMS.c`（Gurux.DLMS.c，GPLv2，自用无分发风险）
+
+---
+
+## 0. 本轮先读这个（易踩的坑，都是花过代价的）
+
+| # | 坑 | 正确做法 | 代价 |
+|---|---|---|---|
+| 1 | 拿 `bb_insert` 当「追加」用 | **不能** ✗。它的 `index` 同时是「目标插入点」和「源数据偏移」，且**从不更新 `target->size`**。追加请手工做：`bb_capacity` → `memcpy(rx->data + rx->size, …)` → `rx->size += len`。库里所有调用都传 `index=0` 才碰巧正确 | 现场「数据过长无法交互」（R26） |
+| 2 | 用 `bb_set` 覆盖接收缓冲 | `bb_set` 本身就是**追加**（`memcpy(arr->data + arr->size, …); arr->size += count`）—— 这条曾被写反，导致改错方向 | 排查绕远 |
+| 3 | 直接对 `NULL` 调 `bb_clear` | 它只检查 `arr->data`、**不检查 `arr` 本身** ✗。OCTET_STRING variant 的 `byteArr` 必须**堆分配**（`gxmalloc` + `bb_init`） | 写/action 一点就崩（R27） |
+| 4 | 手抄截图里的报文做回放 | **别抄** ✗ —— 我在这上面抄错两次（FCS 对不上）。要测就**自己构造合法帧 + 自算 HCS/FCS**；HDLC 的 **HCS 必须覆盖真实长度字节**（先定长再算） | 回放死循环（R31） |
+| 5 | 二进制报文用肉眼核对 | 用**长度域自校验**（`60 4A`=74、`61 56`=86 都能逐级相加验算），或**把本地代码实际发出的字节打出来** | 连续误判三次 |
+| 6 | 改模型默认值 | 必须 grep 出**所有依赖默认值的构造点** —— 预置清单里「本该显式写 IC 却偷懒用默认值」的条目会被带偏 | 电量/功率被标成 Data(1) |
+| 7 | 改 `Codable` 结构体字段 | 必须同步手写 `init(from:)`，**合成解码对「缺键 + 非 Optional」照样抛错** → 旧 JSON 整份失效、用户数据被静默重置 | R19 / R28 同源 |
 
 ---
 
@@ -33,7 +47,7 @@
 
 | 阶段 | 内容 | 出口标准 |
 |---|---|---|
-| **P0 修桥** | 修现有桥接 bug：接收缓冲跨 recv 追加(`bb_insert`)并按 `maxPduSize+50` 动态分配 · Wrapper 不发 SNRM · 断链先 RLRQ(`releaseRequest2(sec!=NONE)`)再 DISC · 超时参数化(连接5s/recv取配置) | 现有 App 在 HDLC/NONE 下稳定读通大 PDU 不丢帧 |
+| **P0 修桥** | 修现有桥接 bug：接收缓冲改为**ctx 上跨 recv 持久化的累积缓冲**（**手工追加**，不是 `bb_insert` ✗ —— 见 R26）并按 `maxPduSize+50` 动态分配 · Wrapper 不发 SNRM · 断链先 RLRQ(`releaseRequest2(sec!=NONE)`)再 DISC · 超时参数化(连接5s/recv取配置) | 现有 App 在 HDLC/NONE 下稳定读通大 PDU 不丢帧 |
 | **P1 核心调试器** | 读/写(按 E1 修正)/执行(hex→variant 整型) · 认证三档(按 E2/E3/E4) · HDLC/Wrapper · 双窗口 · 全局OBIS库 · 超时 | 真表或 Gurux 模拟表读通 `1.0.1.8.0.255` + 报文日志见原始帧；CI 编译过 + 解析器单测过 |
 | **P2 安全** | 信息加密四档(按 §7 修正映射) · IC 同步(M5) · Association View 列表(M10) · 明文 PDU trace(M9) | 对真表专项验证密钥映射 |
 | **P3 增强** | 完整 ASN.1/全类型 hex→variant · 地址合成/解释器 · E-mode | 打磨 |
@@ -56,36 +70,50 @@
 | 密钥 · GUEK | **16 字节全 0**（32 位 hex），可改；留空按全 0 → `cipher.blockCipherKey` |
 | 客户端SystemTitle | **`4142433031323334`**（ASCII "ABC01234"），可改；留空即用该默认（R13） |
 | 密钥 · MK / GBEK | **暂不提供**（`dedicatedKey` 槽位预留；服务器 SystemTitle 自动捕获，不作输入） |
-| 解析使能 | 开 |
+| 解析使能 | 开（**真正生效**：关闭时解析面板只留行 1 的原始 HEX，不做类型/值解析） |
+| 接口类兜底 | **`1`（Data）** —— 解析失败 / 清单缺键时的回退值（模型默认值、导入缺省、编辑器初值、主界面回退四处一致） |
 | 建链/断链 | 一键操作 → 一律自动建链→执行→自动断链（无自动会话开关） |
 | 重复点按钮 | 串行队列 + busy 禁用按钮，不做硬中断（R8） |
+| 版本号 | 从 `Info.plist` 读（真源 `project.yml`），主界面连接摘要右侧常显 `vX.Y (build)` |
 
 > **认证方式 与 信息加密 是两个独立的、互不影响的下拉**：
 > 认证方式默认 **HLS-GMAC**，信息加密默认 **NONE**。审计建议"认证默认 NONE"**未采纳**，按用户要求保留认证默认 HLS-GMAC（E4 决议 ⑦）。
 > 依赖约束：认证=HLS-GMAC 时，客户端 SystemTitle 必须在 AARQ 前设置 → 该字段常显、选 HLS 时必填（R13）。
+>
+> ⚠️ **`信息加密 = NONE` + 认证 HLS-GMAC 的组合曾在真表上失败**，2026-09-21 定位并修复
+> （**§16**）：库的 `cip_encrypt` 要求 `cipher.security != NONE` 才肯算 GMAC，
+> 而桥接层把界面上的 `NONE` 原样传了进去 → 步骤 5「HLS 应答生成」直接返回 `INVALID_PARAMETER`。
+> **修法**：照官方示例手法（`communication.c` 的 `com_updateInvocationCounter`）**临时**把
+> `cipher.security` 置成 `AUTHENTICATION` 只覆盖「算 GMAC」那一步，**打包前立刻还原** ——
+> 这样 GMAC 算得出来 ✓、APDU 仍是明文 `C3` ✓、应用上下文仍是 `…08 01 01` ✓，
+> 与 .NET(GXDLMSDirector) 的成功报文逐字段一致。**现场真表已用 NONE 关联成功并抄表** ✓
 
 ---
 
 ## 3. UI（单屏纵向，顺序＝配→选→抄→看）
 
 ```
-┌ 连接参数（可折叠）────────────────────┐
-│ 传输：IP · 端口 · 接收超时(ms)           │
-│ 地址（随封装联动）：                     │
-│   HDLC : 客户端[预设下拉+自定义hex] · 通信地址(服务器) hex（如 00013FFF）│
-│   Wrapper: 源(默认0001) · 目标(默认0001，逻辑地址固定) │
-│ 应用：认证 NONE/LLS/HLS-GMAC            │
-│       信息加密 NONE/仅加密/仅认证/认证加密(GUEK)   │
-│       LLS密码 · GUAK(16B) · GUEK(16B) · 客户端SystemTitle │
-│ 其它：日志级别 · 解析使能(开关) · 手动连/断 · 更多设置 │
+┌ 连接摘要（常驻）──────────────────────┐
+│ 10.10.10.1 : 4059          [连接测试]   │
+│ HDLC 客户端01 通信00013FFF       v1.2 (3) │ ← 版本号常显（排查时一眼知道打的哪版）
 ├ 操作对象 ───────────────────────────┤
-│ 类[×] · OBIS[下拉全局清单/手输] · 属性/方法[×]    │
-│ 请求数据(HEX，写/执行用) · 自动会话控制(开关)      │
+│ 类[输入框 10/16 进制] · 属性[输入框]      │
+│ OBIS[输入框 + 下拉：最近 OBIS ／ 全局清单] │
+│   ↳ 选中时**同时**带入 接口类 · 属性 · 请求数据 │
+│ 请求数据(HEX，写/执行用；清单里配了会自动填入)│
+│   ↳ 两处实时合法性提示（图标 + 字节数 / 段数）│
 ├ 操作： [读] [写] [执行] ──────────────┤
-├ 数据解析： 原始HEX → 类型/长度/值（受解析使能 · 带清空）│
-├ 报文日志：时间戳·Send/Receive·Original:注解·完整HEX·TX红/RX蓝/信息绿/服务橙·级别过滤 │
+├ 解析 / 报文（分段切换；各自带「满屏」+「清空」）│
+│ 解析面板（**累积** + 独立滚动 + 自动跟随到底）│
+│   09 03 31 32 33                     │ ← 行1：带类型的原始 HEX
+│   -> Type: octet-string, Length: 3, Value: 123 │ ← 行2：人类可读
+│   （「解析使能」关闭时只留行1）           │
+│ 报文面板（时间│TX·RX│类型│HEX 四列 + 独立滚动 + 满屏）│
 └──────────────────────────────────────┘
 ```
+
+> 两个面板顶部共用同一套 `panelHeader`：**左＝本面板的开关/状态，右＝固定「清空」**。
+> 「满屏」用 `fullScreenCover` —— 面板嵌在页面级 `ScrollView` 里高度会被压住，满屏才能看全。
 
 ### 3.1 操作对象输入规则
 - **类：只提供输入框，不做下拉**。COSEM 类实际可能非常多（不止 Data/Register/Extended/ProfileGeneric 这几个），下拉既穷举不了也不可维护。支持 **10/16 进制自动识别**（`3` / `0x1F` / 含 `a-f` 视为 16 进制）。
@@ -103,42 +131,97 @@
 
 | 字段 | 规则 |
 |---|---|
-| **客户端地址** | 预设下拉（管理 `0x01` / 公共 `0x10` / 只读 `0x02` / 预链接 `0x66` / 自定义）。**选中预设时该值只读显示、不可输入**；只有选「自定义」才出现可编辑输入框。客户端地址是 **1 字节** → **2 位 hex**（不是 4 位），**可省略前导 0**（填 `1` → `01`）。 |
-| **通信地址(服务器)** | 允许 **1 / 2 / 4 字节**；默认 **4 字节 `00013FFF`**。**不允许省略前导 0**：固定 `%08X` 显示（填 `1` → 显示 `00000001`），免得"宽度"信息被视觉抹掉。 |
+| **客户端地址** | 预设下拉（管理 `0x01` / 公共 `0x10` / 只读 `0x02` / 预链接 `0x66` / 自定义）。**选中预设时该值只读显示、不可输入**；只有选「自定义」才出现可编辑输入框。客户端地址是 **1 字节** → **2 位 hex**，**可省略前导 0**（填 `1` → `01`）。 |
+| **通信地址(服务器)** | **保留原始输入串**（不再固定 `%08X`）。**宽度 = 输入字节数**，由它自动决定：<br>• **1 字节** → 整串是**逻辑地址**（无物理地址）：`10` → 逻辑 `0x10`<br>• **2 字节** → 逻辑 1 + 物理 1：`0105` → 逻辑 `0x01` + 物理 `0x05`<br>• **4 字节** → 逻辑 2 + 物理 2：`00013FFF` → 逻辑 `0x0001` + 物理 `0x3FFF`<br>• **3 字节（及其它）** → **非法，标红**"地址只能 1 / 2 / 4 字节" |
 | Wrapper 源 / 目标 | 各 4 位 hex，默认 `0001` / `0001`。 |
 
-> ⚠️ **1/2 字节的区分由数值大小决定**：Gurux 按 `serverAddress` 的量级自动推断帧内地址字节数，`dlmssettings.h` 里**没有** `addressSize` 字段（已核实）。
-> 所以**数值相同的 1 字节与 2 字节写法无法区分**（`01` 与 `0001` 都等于 `0x01`）。若某台表要求 2 字节地址字段而值恰为 `0x0001`，当前模型表达不了 —— 见 R16。
+**参数页实时显示**（不用再去猜）：
+
+```
+通信地址(服务器)                        00013FFF
+ⓘ 编码后 0002FEFF（4 字节）· 逻辑 0001 + 物理 3FFF · 末字节 bit0=1 表示地址域结束
+```
+
+- 输入不合法 → **红色**（"HEX 需偶数位且仅含 0-9 A-F" / "地址只能 1 / 2 / 4 字节，当前 N 字节"）。
+- 输入的宽度 ≠ Gurux 实际发出的宽度时 → **黄**色提示
+  （例：`0010` 是 2 字节输入，但逻辑为 0 → 编码值 `0x10 < 0x80` → Gurux 只发 **1 字节**）。
+
+> ⚠️ **Gurux 按数值量级自动定宽**（`dlmssettings.h` 里**没有** `addressSize` 字段，已核实），
+> 所以「输入宽度 ≠ 实际宽度」是**可能出现**的，UI 用 `serverAddressWidthMatched` 标出来 —— 见 R16 / R25。
+> ⚠️ **别把输入的 `00013FFF` 直接喂给 `cl_init`** ✗：Gurux 会按 `v>>14` 解出逻辑 = `0x4F`，编码出完全错误的地址域。
+> 桥接前的换算（模型层 `serverAddressEncoded`）：
+> `1 字节 → logical & 0x7F`；`2 字节 → (logical&0x7F)<<7 | physical&0x7F`；
+> `4 字节 → (logical&0x3FFF)<<14 | physical&0x3FFF`。
+> 默认 `00013FFF` → `0x7FFF` → 线上 **`00 02 FE FF`**（**现场真表抓包验证过** ✓）。
 
 ### 3.3 添加 / 编辑 OBIS 的字段顺序
 
 表单自上而下**固定**为：
 
 1. **名称**
-2. **接口类**（IC，输入框，10/16 进制自动识别）
+2. **接口类**（IC，输入框，10/16 进制自动识别；初值 `1`）
 3. **逻辑名 OBIS**
 4. **属性 / 方法**
 5. 单位（可选）
 6. 量纲 / 倍率（可选）
+7. **请求数据**（可选，HEX，如 `11 01`）—— 单独成 Section
 
-> 顺序即录入习惯：先认"这是什么" → 再定位"到哪里取" → 最后补"怎么换算"。
+> 顺序即录入习惯：先认"这是什么" → 再定位"到哪里取" → 最后补"怎么换算 / 怎么下发"。
 > 量纲单独成字段（`ObisItem.scaling`），便于后续把 `value × 10^scaler` 的换算做进展示层。
 > ⚠️ 接口类输入框的占位文字写的是 `Data=1`，但该串含 `=` **无法被解析**（保存时会静默保留原值）—— 见 R24。
+
+**「请求数据」字段（v1.7）**：
+
+- 用途：**Set / Action 的固定参数**随 OBIS 一起存下来，免去每次手输。
+- 落点：`ObisItem.data`（HEX 字符串，保留用户写的分隔空格，只做首尾去空白 + 大写）。
+- 行为：主界面**从下拉选中该 OBIS 时自动填入**「请求数据」输入框。
+  - 清单里**没配** ↔ **清空**输入框 —— 这是刻意的：切到另一条 OBIS 后若残留上一条的数据，
+    很容易把值写到错的对象上。
+  - 清单里**查不到**该 code（手输未入库）→ 只更新逻辑名，不动类/属性/数据，
+    免得抹掉用户刚手填的值。
+- 配套：JSON 导入支持 `data` 键；CSV 支持**第 6 列**（`code,name,unit,接口类,属性,请求数据`）。
+- ⚠️ **`ObisItem` 必须手写 `init(from:)` 容错解码** —— 合成解码对「缺键 + 非 Optional」照样抛错，
+  旧 `obis.json`（没有 `data` 键）会**整份解码失败** → `Store.load` 返回 nil →
+  用户清单被静默重置成预置列表。**改字段必须同步该 init**（R28）。
 
 ---
 
 ## 4. 数据模型（JSON 文件存储）
 
-- **`ConnectionConfig`**：IP、端口、超时、封装(HDLC/Wrapper)、客户端地址(预设+自定义)、通信地址/源/目标、认证、信息加密、三密钥(LLS密码/GUAK/GUEK)、客户端 SystemTitle、解析使能 —— **记住上次**。
+三个文件都在 `Documents/`：`config.json` / `obis.json` / `recent.json`。
+
+- **`ConnectionConfig`**：IP、端口、超时、封装(HDLC/Wrapper)、客户端地址(预设+自定义)、
+  **通信地址(原始输入串 `serverAddressHex`)**、Wrapper 源/目标、认证、信息加密、
+  三密钥(LLS密码/GUAK/GUEK)、客户端 SystemTitle、解析使能、**最近连接 `recentEndpoints`** —— **记住上次**。
   - 解码为**容错式**：`init(from:)` 逐项「缺键/类型不符 → 回退默认值」，字段增删不会让旧 `config.json` 整体失效。**改字段必须同步该 init**。
-- **`AddressPreset`**：`管理=1 / 公共=0x10 / 只读=2 / 预链接=0x66 / 自定义`（HDLC 客户端下拉；数值可改）。
-- **`ObisLibrary`**：全局 OBIS 清单（下拉选、手输、导入、预置）。
-- **`recentObis`**：最近读过的 OBIS，填充下拉；**不存数据值**。
+  - `CodingKeys` **显式声明**，且保留**已淘汰但必须能读**的旧键做迁移：
+    `serverAddress`(UInt32) → 迁移成 8 位 hex；`serverAddressWidth`(手动宽度) → 读入后忽略；
+    `akekHex` → 旧密钥名。
+  - ⚠️ 要区分「**键不存在**」与「**键存在但为空串**」：后者是用户清空了输入框，
+    **不能**再当旧存档迁移回来（`serverAddressHex` 走 `decodeIfPresent` 判断键是否存在）。
+  - 通信地址的计算属性：`serverAddressNormalized` / `serverAddressBytes` / `serverAddressIsValid` /
+    `serverLogical` / `serverPhysical` / `serverAddressEncoded` / `serverAddressEffectiveWidth` /
+    `serverAddressWidthMatched` / `serverAddressWireHex`（详见 §3.2）。
+- **`ClientPreset`**：`管理=1 / 公共=0x10 / 只读=2 / 预链接=0x66 / 自定义`（HDLC 客户端下拉）。
+- **`ObisItem`**（`obis.json`）：`code` / `name` / `unit` / **`objectClass`（兜底 `1`）** / `attribute` /
+  `scaling` / **`data`（Set/Action 固定请求数据）** / `enabled`。手写 `init(from:)` 容错解码（R28）。
+- **`recentObis`**（`recent.json`）：最近用过的 OBIS，填充下拉；**存归一形态**（见下）、不存数据值。
+- **`parseEntries`**：解析面板的**累积**历史（**上限 200 条 / 高水位 250**，与 `logs` 同一套裁剪口径）。
+  之所以是数组而不是一整串：面板要能滚动回看，且「解析使能」关闭时需**逐段**只取行 1，
+  拼成一整串就分不清段落边界了。
+- **`logs`**：报文日志（上限 **2000** / 高水位 2500，UI 只渲染最近 200 条）。
+
+**OBIS 写法归一（`ObisUtil.comparisonKey`）**：
+去空白 + 转大写 + 把 `- : * ,` 统一成 `.`。
+「最近 OBIS」与清单条目的**匹配和去重都必须走它** —— 两边写法可能不同
+（`1-0:1.8.0*255` vs `1.0.1.8.0.255`），直接用原文比较会**静默匹配失败**：
+选中后类/属性/请求数据全带不过来，下拉里还会出现同一对象的两个变体（R30）。
 
 枚举映射（已锁定）：
 - 封装：`HDLC=0` / `Wrapper=1`
 - 认证：`NONE=0` / `LLS(LOW)=1` / `HLS-GMAC(HIGH_GMAC)=5`
-- 对象类：`Data=1` / `Register=3` / `ExtendedRegister=4` / `ProfileGeneric=7`
+- 信息加密：`NONE=0` / `仅认证=0x10` / `仅加密=0x20` / `认证加密=0x30`
+- 对象类（仅下拉预设用，实际可填任意 Int）：`Data=1` / `Register=3` / `ExtendedRegister=4` / `ProfileGeneric=7`
 
 ---
 
@@ -171,15 +254,60 @@
 - 错误区分（M11）：server 地址错→表不响应；client 地址错→认证错误；`APPLICATION_CONTEXT_NAME_NOT_SUPPORTED`→LN/SN 引用方式错；`INVOCATION_COUNTER_ERROR`→从 `reply.data` 读期望 IC；`READ_WRITE_DENIED`→换更高认证 client 地址。
 - **并发（R8）**：串行队列 + busy 标志，执行期禁用按钮；不做硬中断（C 状态机非线程安全）。每次建链前 `cl_clear`+重新 `cl_init`（IC 复位，见 R14 限制）。超时由 Swift socket 层实现（见 §9）。
 
+**★ HLS 应答：必须把「算 GMAC」和「打包 APDU」在时间上切开**（v1.6，现场验证 ✓）
+
+库把两件事耦合在同一个字段 `cipher.security` 上：
+
+| 用途 | 判定位置 | 行为 |
+|---|---|---|
+| ① APDU 是否加密打包 | `isCiphered()` = `security != NONE`（`dlmsSettings.c:439`） | 决定应用上下文 `…08 01 01`(明文) / `…08 01 03`(加密)，以及 action 打成 `C3` 还是 `CB` |
+| ② 能否算 GMAC | `cip_encrypt` 的守卫 `security == NONE → INVALID_PARAMETER`（`ciphering.c:681`） | 即使 `dlms_secure` 已**显式传入** `DLMS_SECURITY_AUTHENTICATION`，仍被这道"查会话整体"的守卫拒掉 |
+
+所以「临时把 `security` 置成 `0x10`」**不能**一路置到底 ✗ —— `0x10 != NONE` 会让 `isCiphered()` 变 **true**，
+HLS 应答被打成 `CB … C3 …`（glo-action），而本表对加密上下文**永久拒绝**。
+
+正确时序（`DLMSBridge.c` 的 `dlms_initialize`）：
+
+```c
+saved = cipher.security;
+cipher.security = DLMS_SECURITY_AUTHENTICATION;
+dlms_secure(...);                       /* ① 只为过那道守卫，算出 SC+IC+GMAC */
+cipher.security = saved;                /* ★ 立刻还原 —— 打包前！ */
+/* ② 打包：security 已是 NONE → 明文 C3，不是 CB */
+cl_methodLN(settings, LN_0_0_40_0_0_255, ..., &data, &msg);
+dlmsReadDataBlock(...);                 /* ③ 发送 + 收 */
+cipher.security = DLMS_SECURITY_AUTHENTICATION;
+cl_parseApplicationAssociationResponse(...);   /* parse 内部也调 dlms_secure，再开窗口 */
+cipher.security = saved;
+```
+
+- 手法**出自官方示例** `GuruxDLMSClientExample/src/communication.c` 的 `com_updateInvocationCounter`
+  （它自己就在运行时切 `settings` 再还原），不是自创的 hack ✓
+- 产出报文与 .NET(GXDLMSDirector) 的成功报文**逐字段一致**：
+  `C3 01 C1 00 0F 00 00 28 00 00 FF 01 | 09 11 | 10 <IC:4B> <GMAC:12B>`
+  （明文 `C3` + 安全头 `SC=0x10`）✓ **现场真表 `信息加密=NONE` 已关联成功并抄表** ✓
+- ⚠️ **不能**在整个会话期间把 `cipher.security` 改成非 NONE ✗ —— 那会让 AARQ 的应用上下文变成
+  `…08 01 03` 而被表**永久拒绝**（`A2 03 02 01 01`）。
+- 为什么「仅认证(0x10)」这条路在这台表上走不通：库把它也算作"已加密" → 上下文变 `…01 03` → 被拒。
+  **所以就用 `NONE`**，让桥接层按上面的时序处理 ✓
+
 ---
 
 ## 6. 地址模型（已由源码证实）
 
-- 客户端=`clientAddress`；通信地址=`serverAddress`；两模式同样喂 `cl_init`，区别仅在帧内编码：
+- 客户端 = `clientAddress`；通信地址 = `serverAddress`（**运行期由 `serverAddressHex` 推导**）；
+  两模式同样喂 `cl_init`，区别仅在帧内编码：
   - **Wrapper**：源/目标**直接用**（默认 `0001` / `0001`）。
-  - **HDLC**：客户端为 clientAddress（预设下拉）；通信地址为服务器地址（hex，`00013FFF` 型，即**逻辑+物理合成值**）；帧内由 Gurux 按 serverAddress 大小**自动推断地址字节数**，无需外部 `addressSize`。
-- 合成便捷项（P3）：`cl_getServerAddress(logical, physical, size)` = 小址 `logical<<7|physical` / 大址 `logical<<14|physical`，生成 `通信地址`。
-- `clientAddress:uint16_t`、`serverAddress:uint32_t`（dlmssettings.h 已确认，无 addressSize 字段）。
+  - **HDLC**：客户端为 `clientAddress`（预设下拉）；通信地址由**用户输入的原始串**决定宽度并拆分逻辑/物理，
+    再**换算成 Gurux 期望的形态**后喂给 `cl_init`（见 §3.2、R25）。
+- 喂进去的**不是** UI 那个 `00013FFF` ✗ —— Gurux 期望"已按目标宽度拼好的值"：
+  `1B → logical & 0x7F`；`2B → (logical&0x7F)<<7 | physical&0x7F`；
+  `4B → (logical&0x3FFF)<<14 | physical&0x3FFF`。
+  然后由 Gurux 按 **7bit/字节 + bit0 扩展位**打包（`dlms.c:2420-2445`，按数值量级自动定宽）：
+  默认 `00013FFF` → `0x7FFF` → 线上 **`00 02 FE FF`**（**现场真表抓包验证过** ✓）。
+- `clientAddress:uint16_t`、`serverAddress:uint32_t`（`dlmssettings.h` 已确认，**无** `addressSize` 字段）。
+- ⚠️ R16 提醒：`cl_getServerAddress` 返回 `uint16`，逻辑地址 ≥ 4 时会溢出 —— 桥接层不要走那个 helper，
+  自己做位运算（上面三行）。
 
 ---
 
@@ -199,6 +327,21 @@
   - **客户端自己的 SystemTitle** → `settings->cipher.systemTitle`（`client.c:443` 用它当 GMAC 密钥），**必须在 `cl_aarqRequest` 之前设置**，否则 AARQ 无 A6 字段、HLS 必然失败（R13）。
   - **服务器 SystemTitle** → `settings->sourceSystemTitle`（顶层 `unsigned char[8]`，**由 AARE 的 AP-title 自动回填**，`apdu.c:1737`），一般无需手填；仅 pre-established 才需手填。**不作为 UI 输入，捕获后显示在数据/日志区。**
 - 相关字段（已确认 ciphering.h）：`security`、`suite`、`securityPolicy`、`encrypt`、`blockCipherKey`、`broadcastBlockCipherKey`、`systemTitle`、`invocationCounter`、`authenticationKey`、`dedicatedKey`。
+
+### 7.1 四档在真表上的实测（2026-09-21，HDLC + HLS-GMAC + 4 字节地址）
+
+| 信息加密 | 结果 | 原因 |
+|---|---|---|
+| `NONE` (0x00) | **✓ 可读表**（**经 v1.6 桥接修复后**） | 库不肯在 `security == NONE` 下算 GMAC → 桥接层按 §5.2 的"切开算/打包"时序处理，**APDU 仍是明文 `C3`、上下文仍是 `…01 01`** ✓ |
+| `仅认证` (0x10) | ✗ **这台表拒绝** | 库把 `0x10` 也算作"已加密" → 应用上下文变 `…08 01 03` → 表回 `A2 03 02 01 01`（permanent-rejected） |
+| `仅加密` (0x20) | ✓ 可读表 | 上下文 `…01 03`，本表接受 |
+| `认证加密` (0x30) | ✓ 可读表 | 同上，也是 HLS-GMAC 的标准组合 |
+
+> **结论：就用 `NONE`**（协议语义上 HLS-GMAC 配 NONE 是合法配置 ✓，用户判断正确；
+> 是这一版 C 库的实现限制需要绕，**不是协议问题**）。
+> 判据来自 `.NET(GXDLMSDirector)` 的 **GMAC + `Security: None` 成功报文**：
+> 应用上下文 `…08 01 01`、HLS 应答是**明文 `C3` + `SC=0x10` + 12B GMAC** ✓
+> —— 这正是我们修复后的产出形态，**现场已逐字节对上** ✓
 
 ---
 
@@ -232,16 +375,74 @@
     - 清空按钮在内容为空时 `disabled`（灰掉），避免误点后莫名无反馈。
     - 做成同一套布局是为了切面板时**视线不用重新找按钮**。（此前报文面板**根本没有**清空入口，`Store.clearLogs()` 实现了却从未被调用。）
   - 报文的 `>>>` 语义注解（R4）仍留 P3 加深。
-- **数据解析**：解析使能开时，把 `var_toString` 结果 + ASN.1 `Tag/长度/值` 拆解显示；窗口带「清空」。
+  - **报文面板可满屏**：面板嵌在页面级 `ScrollView` 里，高度被压住拉不开；
+    「满屏」用 `fullScreenCover` 展示。`logList(height:)` 已**参数化**（内嵌传 `260`，满屏传 `nil` 放开约束）
+    —— 此前写死 `.frame(height: 260)`，满屏视图里列表也只有 260pt、下面一片空白 ✗。
+  - ⚠️ **报文类型列是启发式识别，可能误标**：`classify` 扫前 16 字节里首个命中的 tag，
+    HDLC 帧的第 8 字节是 HCS（如 `C0`）会**先于**真正 APDU 的 `0x60` 命中 →
+    AARQ 被标成 `Get-Request`。**看日志时请忽略类型列**，精确化方案见 §13.2 / R20。
+
+- **数据解析（v1.7 重做：两行格式 + 累积滚动）**
+
+  桥接层 `dlms_renderValue` 输出**恰好两行**，UI 直接显示：
+
+  ```
+  09 03 31 32 33
+  -> Type: octet-string, Length: 3, Value: 123
+  ```
+
+  | 行 | 内容 | 规则 |
+  |---|---|---|
+  | **行 1** | 带类型的**原始 HEX** | 变长类型（octet-string / visible-string / utf8-string / **bit-string**）→ `tag + 长度 + 内容`；定长类型 → `tag + 内容`（整数**大端**对齐到宽度）。长度按 A-XDR 编码：`<0x80` → 1 字节；`≤0xFF` → `0x81`+1；`≤0xFFFF` → `0x82`+2；否则 `0x83`+3 |
+  | **行 2** | `-> Type: <名字>, [Length: N,] Value: <可读>` | 整数/浮点/枚举交 `var_toString`；`boolean` → `true/false`；octet-string 全可打印 → 直接给 ASCII，否则 `（非文本）`；date-time / array / structure 交库 |
+
+  - `bit-string` 的 `bitArray.size` 是**位数**、而编码里的长度是**字节数** → `(size + 7) / 8`
+    （此前 `hasExplicitLength` 声明了它有长度字节、`lengthPrefixedBytes` 却不处理它 →
+    行 1 输出假长度 `04 00`，真实位串整个丢掉 ✗）。
+  - 复合/未知类型（FLOAT / DATE / TIME / DELTA_*）**只输出 tag** —— 这是"不做编码回推"，不是丢数据。
+  - **累积显示**：结果 push 进 `store.parseEntries`（不是每次替换），面板独立滚动 + 新结果自动跟随到底，
+    右上「清空」清历史。
+  - **「解析使能」真正生效**：关闭时**逐段**只留行 1（原始 HEX），不做类型/值解析
+    —— 此前这个开关**没有任何地方读取它**，拨了完全没反应 ✗。
+  - 类型名表以 `enums.h` 为准（`INT32=0x05` 是 **double-long** 不是 "long"；`UINT32=0x06` 同理）。
 
 ---
 
-## 9. 桥接 C 增量（相对现有 `DLMSBridge.c`）
+## 9. 桥接 C 增量（`Sources/DLMSCore/Headers/DLMSCore.h` 的**实际**公开面）
 
-`dlms_initialize`(按 interfaceType 分支 + HLS challenge,见 §5.2) · `dlms_read` · **`dlms_write`**(hex→`bb_addHexString`, `byteArray=1`) · **`dlms_method`**(hex→variant) · `dlms_set_security(DLMS_SECURITY, 密钥)` · `dlms_set_clientSystemTitle`(→`cipher.systemTitle`, AARQ 前) · `dlms_get/set_invocationCounter`(→`cipher.invocationCounter`, P2) · `dlms_disconnect`(先 RLRQ 再 DISC) · `dlms_set_trace` · 地址预设即预填数值 · 建链后**捕获服务器 SystemTitle**(AARE→`sourceSystemTitle`)随数据/日志显示。
+```
+生命周期   dlms_new / dlms_free
+配置       dlms_set_security(security, guek, guak, dedicated=NULL)
+           dlms_set_clientSystemTitle(hex)        ← 必须在 AARQ 前（R13）
+           dlms_set_invocationCounter(value)      ← P2
+查询       dlms_get_serverSystemTitle(out, &len)  ← AARE 回填的服务器 SystemTitle
+I/O        dlms_set_io(user, sendFn, recvFn)  /  dlms_set_trace(user, traceFn)
+会话       dlms_initialize / dlms_read / dlms_write / dlms_method / dlms_disconnect
+诊断       dlms_lastStep / dlms_sendFailed / dlms_step_name(int step)
+           dlms_rxSize / dlms_rxPosition         ← 只读；排查分片/游标问题用（v1.7）
+错误/渲染  dlms_error_string(code)  /  dlms_dataTypeName(int)
+```
+
+- `dlmsCtx` 在公开头里是 **opaque 类型**，所以给它加字段（如诊断用的 `lastStep`/`sendFailed`）
+  **不影响 ABI，也不影响 Swift 侧**。
+- 参数名以头文件为准：`dlms_set_security` 的第 3/4 参历史上叫 `akekHex`/`authKeyHex`，
+  含义是 **GUEK / GUAK**（见 §7、R21）。
+- `dlms_initialize` 按 `interfaceType` 分支（Wrapper 不发 SNRM，R18）+ HLS challenge（§5.2，
+  **含 v1.6 的"切开算/打包"时序**）。每步失败会记 `lastStep`；`dlmsSendFrame` 的 send 失败记 `sendFailed`。
+- **`dlms_sendFrame` 的两道有界性闸门**（防死循环 + 防内存无限增长）：
+  - `DLMS_MAX_RECV_ROUNDS = 256` —— **轮次**上限。之所以必须有：`fail` 在"收到数据"时归零，
+    若对端持续有字节到达却始终构不成一个会被接受的帧，唯一的守卫就失效了 → 死循环 + `rx` 无限增长。
+  - `DLMS_MAX_RX_BYTES = 256KB` —— **字节**上限（轮次管不了总量）。
+- `dlms_write` / `dlms_method` 的失败路径会 `var_clear(&v)` 释放已建的 variant
+  （`dlms_write` 里必须先补 `var_init(&v)`，否则失败路径的 `var_clear` 会读未初始化内存）—— 见 R27。
+- `dlms_renderValue` **刻意不进头文件**（避免 Swift 侧看到 `dlmsVARIANT` 类型），
+  只在 C 内部 + 测试里自行声明 —— 这样单测能构造 variant 直接断言渲染结果。
 
 - **`dlms_set_timeout` 删除**：vendor 无此符号，超时由 **Swift socket 层**实现（连接超时 5s；recv 取 `ConnectionConfig.recvTimeoutMs` 默认 3000；整体操作/TM 分隔）。
-- **P0 修桥（首要）**：接收缓冲改为 **ctx 上跨 recv 持久化的累积缓冲** + `bb_insert` **追加**（当前 `bb_set` 是覆盖，大 PDU 丢帧）；容量按 `maxPduSize + 50` 动态分配（非 512B 固定）；Wrapper 不发 SNRM；断链先 `cl_releaseRequest2(sec!=NONE)` 再 `cl_disconnectRequest`。
+- **P0 修桥（首要）**：接收缓冲改为 **ctx 上跨 recv 持久化的累积缓冲**。
+  ⚠️ **追加必须手工做**，**不要用 `bb_insert`** ✗ —— 它的 `index` 参数同时被当作「目标插入点」和「源数据偏移」（实现是 `memmove(target->data + index, src + index, count)`），且**从不更新 `target->size`**；库里所有调用都传 `index=0` 才碰巧正确。正确写法见 `DLMSBridge.c` 的 `bufAppend`：
+  `bb_capacity(rx, rx->size+len+256)` → `memcpy(rx->data + rx->size, src, len)` → `rx->size += len`（**R26**，这是现场「数据过长无法交互」的根因）。
+  容量按 `maxPduSize + 50` 动态分配（非 512B 固定；官方原话：有些表会多发几个字节）；Wrapper 不发 SNRM；断链先 `cl_releaseRequest2(sec!=NONE)` 再 `cl_disconnectRequest`。
 - **socket 归属写死**：Swift 持有 socket；bridge 暴露「给报文→收响应」的阻塞式接口；HDLC 帧边界用 `cl_getData` 的 `reply->complete` 判定，Receiver Ready / data-block 续传循环放 bridge 层（照抄 `GuruxDLMSClientExample/src/communication.c`）。
 - **会话复位（R8）**：每次建链前 `cl_clear`+重新 `cl_init`（`invocationCounter` 复位；P1 文档化"IC 从 1 起可能被真表拒"，P2 加 IC 同步 M5）。
 - **trace（M9/R9）**：优先**零 patch**——bridge 的 send/recv 抓原始帧 + 提供 `cip_tracePdu`(见 `ciphering.h:192`)接管明文 PDU；仅需在 `gxignore.h:186` 开 `DLMS_TRACE_PDU` 一行（可脚本化）。
@@ -285,6 +486,33 @@
 
 > ⛔ **不要**用 `git credential fill` 去取 token 拉日志：本机凭据未缓存时**每次都会弹浏览器登录**。
 
+### 10.3 本地测试（拟真台，一条命令）
+
+```bash
+CC=/c/TDM-GCC-32/bin/gcc.exe bash Tests/CTests/run.sh     # Windows / MinGW
+CC=clang bash Tests/CTests/run.sh                          # Linux / macOS（CI 用）
+```
+
+`run.sh` 编排四步（跨平台，gcc/clang 均可）：
+
+| 步 | 内容 | 断言强度 |
+|---|---|---|
+| ① | 单测 `test_dlms`（含**协议回放**：桩 send/recv + 自造合法帧） | 强（`DLMS_SKIP_REPLAY=1` 可跳） |
+| ② | 端到端 `local_e2e`（**真 TCP socket** ↔ `tools/mock_meter`，整帧） | 强 |
+| ③ | 分片观察（8 / 16+5ms / 32 / 64 字节） | 强（修掉 R26 后分片已能正常重组） |
+| ④ | 有界性（对端静默） | 强（必须**快速有界失败**，不得挂死） |
+
+- 窗口/平台差异由 `tools/sock_compat.h` 收敛；MinGW 需 `-lws2_32`（`run.sh` 按 `uname` 自动加）。
+- 本机 loopback 监听**不弹防火墙**；模拟表能精确复现"长帧被 TCP 拆开"。
+- 实测耗时（用 `-O0 -g`）：编译 43 个 `.c` + 桥接 + 测试 + 链接 ≈ **15 s**；加 `--coverage` 插桩 ≈ **65 s**；
+  **测试体本身 < 0.1 s** —— 慢在编译，不在测试。建议用后台任务跑以免等待。
+- 覆盖率工具链：`gcov` 在 MinGW 里有（`C:\TDM-GCC-32\bin\gcov.exe`）；跑完 exe 后到 `.gcno/.gcda` 目录
+  `gcov <name>.gcda`，函数级明细加 `-f`。
+
+> ⚠️ 一条踩过的坑：`gdb` 在 TDM-GCC 里**没有** ✗，`nm`/`objdump` 的输出也常被吞 ✗。
+> 这类排查**最可靠的手段是"给桩加计数和上限 + 逐句打印 + `setvbuf(stdout, NULL, _IONBF, 0)`"**
+> —— `setvbuf` 必须加，否则进程崩溃会丢掉所有缓冲输出，只能看到一个空结果。
+
 ---
 
 ## 11. 明确不做（P1/P2/P3 之外）
@@ -306,7 +534,7 @@
 | R7 | OBIS hex 自动识别启发式（含 a-f→16进制）可能误判 | 十进制 OBIS 无字母，接受此启发式 |
 | R8 | 重复建链下 invocation counter / 会话状态复位 | 每次连接前 `cl_clear`+重新 `cl_init`；串行+busy，禁硬中断 |
 | R9 | vendor trace patch 维护 | **降级**：优先零 patch（bridge 抓帧 + `cip_tracePdu` 接管明文） |
-| R10 | 接收帧跨 TCP 分段被覆盖（当前 `bb_set`） | P0：改跨 recv 持久化累积缓冲 + `bb_insert` 追加 |
+| R10 | 接收帧跨 TCP 分段被覆盖（原 `bb_set`） | **P0 已修 ✓**：改为 ctx 上跨 recv 持久化的累积缓冲。⚠️ 但修的时候**误把 `bb_insert` 当追加用**，反而引入 R26 —— 见下 |
 | R11 | 接收缓冲 512B 过小 | P0：按 `maxPduSize+50` 动态分配 |
 | R12 | HLS 缺 challenge 回合 | P1：`isAuthenticationRequired` → `cl_getApplicationAssociationRequest` |
 | R13 | 客户端 SystemTitle 未设 → AARQ 无 A6、HLS 失败 | P1：UI 常显 + 8 字节校验 + 选 HLS 标必填；v1.3：默认 `4142433031323334`，留空不再落成空值 |
@@ -322,6 +550,13 @@
 | R23 | 整数越界曾直接 **trap 崩溃**（`UInt16(x)`/`UInt8(x)` 是非夹取转换） | v1.4 已修：C 边界统一 `UInt16(clamping:)` / `UInt8(clamping:)`（类填 99999、属性填 300、端口填 99999 不再闪退） |
 | R24 | OBIS 编辑器接口类占位符写 `Data=1`，该串含 `=` **无法解析** → 保存时静默保留旧值 | v1.4 已改为可解析的示例（`3 / 0x1F`） |
 | R25 | 地址"1 字节 / 2 字节"**无法用数值区分**（`01` 与 `0001` 都是 `0x01`） | **v1.6 已解决 ✓**：`serverAddress` 不再用 `UInt32`，改为**保留原始输入串** `serverAddressHex` —— 宽度 = 输入字节数（1/2/4；3 字节等非法，UI 标红）。拆分规则：1 字节=仅逻辑地址；2 字节=逻辑/物理各 1；4 字节=各 2。Gurux 仍按数值量级定宽，故 UI 用 `serverAddressWidthMatched` 提示"输入宽度 ≠ 实际宽度"（见 R16） |
+| **R26** | **`bb_insert` 被当作"追加"用** —— 它的 `index` 同时是「目标插入点」和「源数据偏移」（`memmove(target->data+index, src+index, count)`），且**从不更新 `target->size`**。库里所有调用都传 `index=0` 才碰巧正确 | **已修 ✓**（`c6d1ff8`）。`bufAppend` 改为手工追加（`bb_capacity` → `memcpy` → `size += len`）。**症状特征：短响应（一次 recv 到齐）正常，一旦被 TCP 拆开就永远收不全** —— 这正是现场报的「数据过长无法交互」✓ 定位靠**分片矩阵实验**（8/16/32 字节全挂、96 字节=整帧才成功）+ `dlms_rxSize` 打印出 `size` 卡在首片长度 |
+| **R27** | **`bb_clear` 不检查 `arr` 本身**（只查 `arr->data`），而 `var_init` 把 `byteArr` 置 `NULL` → `bb_clear(NULL)` 读 `NULL->data` 崩溃。两条路径：写（`buildBytesVariant`）、action（`buildVariantFromHex` 先设了 `vt` → `var_addBytes` 跳过分配分支走 else） | **已修 ✓**（`7e9770e`）。新增 `setOctetStringVariant()`：照库自身约定 `gxmalloc(sizeof(gxByteBuffer))` + `bb_init` + `bb_set`；两处调用点统一用它。**判据**：OCTET_STRING variant 的 `byteArr` **必须堆分配** —— 写/action 一点就崩、读路径没事（读不构造 variant） |
+| **R28** | **`ObisItem` 新增 `data` 字段后没同步手写 `init(from:)`** → 合成解码对「缺键 + 非 Optional」照样抛错 → 旧 `obis.json` **整份解码失败** → `Store.load` 返回 nil → 用户清单**被静默重置成预置列表** | **已修 ✓**（`8c16bcc`）。手写容错 `init(from:)`（与 `ConnectionConfig` 同一口径）。**这是 R19 的同类坑在第二个模型上重演** —— 凡是 `Codable` 结构体加/改字段，必须同步 init |
+| **R29** | **预读缓冲的两处内存隐患**（审核报告 v2 的 N1/N2）：① `receive` 两处排空 `pending` **都无视 `max`**，而 recv 回调 `copyBytes(to:count:)` 是**无边界检查写入**、C 侧缓冲是固定 `tmp[2048]` 栈数组 → **栈破坏**；② `pending` 无字节上限 | **已修 ✓**（`a71adba`）。① 新增 `takePending(buf:max:)`：按 `max` 截断、**余量留在 pending**；回调再加 `min(cap, d.count)` 兜底。② `pendingLimit = 256KB`（对齐 C 侧 `DLMS_MAX_RX_BYTES`），超限丢最旧。**关键放大器**：`connection.receive` 的 completion **超时后无法取消**（Network.framework 无单次取消 API），而 `dlmsSendFrame` 允许重试 256 轮 → 可累积 N 个挂起 completion，一次排空可达 `256×2048`，**不是报告说的 2×2048** |
+| **R30** | **OBIS 写法差异导致静默匹配失败**：清单里是点分归一形态（`1.0.1.8.0.255`），「最近 OBIS」存的是用户当初的输入原文（可能 `1-0:1.8.0*255`）→ 按原文比较**永远查不到** → 选中后类/属性/请求数据全带不过来；下拉里同一对象还会出现两条 | **已修 ✓**（`8c16bcc`）。新增 `ObisUtil.comparisonKey`（去空白 + 大写 + `- : * ,` → `.`），**匹配与记录两处都走它**。凡涉及 OBIS 的比较/去重一律用它 |
+| **R31** | **测试脚手架 `buildHdlc` 的 HCS 算错**（先用 `0x00` 占位算 HCS、之后才回填长度，而 HDLC 的 **HCS 必须覆盖真实长度字节**）→ 库校验不过**静默跳过该帧** → `reply->complete` 恒为 0 → `dlmsSendFrame` **死循环**（`fail` 在"收到数据"时归零，唯一守卫失效） | **已修 ✓**（`af449aa`）。先定长再算 HCS。**用现场真实 UA 帧独立验证**：`HCS(A0 1E 03 03 73)=CC40` → 线上 `40 CC` ✓ 与抓包一致。生产侧同时加 `DLMS_MAX_RECV_ROUNDS=256` 兜底（防"对端持续吐数据却构不成可接受帧"）|
+
 
 ---
 
@@ -344,10 +579,20 @@
 
 ### 13.2 仍待确认 / 待做
 
-- `cl_methodLN` 的复杂入参（ARRAY / STRUCTURE / 浮点 / 日期）→ P3；注意 R17 的 vendor bug（分支条件恒假）
-- **精确报文类型标注**：让 bridge 把 C 层已解析的 `gxReplyData.command`（`DLMS_COMMAND`）随 trace 回传，即可去掉启发式误标风险（R20）
-- **地址宽度显式表达**（1/2/4 字节区分）→ **v1.6 已实现 ✓**（`serverAddressHex` 保留输入字节数）
-- 密钥长度在 bridge 侧拦截（R22）
+- `cl_methodLN` 的复杂入参（ARRAY / STRUCTURE / 浮点 / 日期）→ P3；注意 R17 的 vendor bug（分支条件恒假）。
+- **精确报文类型标注**：让 bridge 把 C 层已解析的 `gxReplyData.command`（`DLMS_COMMAND`）随 trace 回传，
+  即可去掉启发式误标风险（R20）。**当前 `classify` 会把 AARQ 标成 `Get-Request`**（HCS 的 `C0` 先命中）。
+- ~~地址宽度显式表达~~ → **v1.6 已实现 ✓**（`serverAddressHex` 保留输入字节数）。
+- **密钥长度在 bridge 侧拦截**（R22）：AES-128 需恰好 16 字节，错长度会以同一个 `INVALID_PARAMETER` 失败，难排查。
+- **mock 的 Set-Response 保真度**：`local_e2e` 里 `dlms_write` 目前只能弱断言（"非 `INVALID_PARAMETER`"），
+  实测返回 `260 (RECEIVE_FAILED)` —— 判定为 mock 回的最小 `C5 01 00` 不足以让库接受，**非生产 bug**。
+  补全后 write 才能做成强断言（否则写路径的端到端正确性实际没被闸门守住）。
+- **`pending` 的根治**（R29 的后续）：`prefix(max)` 只防溢出，`pending` 仍可能增长。
+  更根本的做法是**常驻接收循环**（一次只挂一个 completion，收到就入队、永不因超时丢弃）
+  —— Network.framework 的惯用法。改动面较大，需单独评估。
+- `Store.load/save` 现在会把"文件损坏"记一条 warn（v1.7）；但**写盘失败**仍是静默的（异步队列里的 `try?`）。
+- **S1 密钥入 Keychain**：仍是明文存 `config.json`（自用调试台，待定）。
+- **M5 `ObisImporter` 单测**：仍是缺口（含 `parseBare` 不处理 RFC4180 转义引号 `""`）。
 
 ---
 
@@ -360,7 +605,7 @@
 
 | # | 问题 | 处置 |
 |---|---|---|
-| U1 | **报文日志无独立滚动**：日志无限追加，却跟着**页面级外层 `ScrollView`** 一起滚 —— 新报文落在下方看不到，攒到 200 行整页被拉极长 | 日志区改**独立 `ScrollView` + 固定高度 260pt**；用 `ScrollViewReader` 在新报文到达时**自动滚到底**（一次操作结束后没有新流量，此时可自由向上翻阅历史） |
+| U1 | **报文日志无独立滚动**：日志无限追加，却跟着**页面级外层 `ScrollView`** 一起滚 —— 新报文落在下方看不到，攒到 200 行整页被拉极长 | 日志区改**独立 `ScrollView`**；用 `ScrollViewReader` 在新报文到达时**自动滚到底**（一次操作结束后没有新流量，此时可自由向上翻阅历史）。v1.7 补：高度**参数化**（内嵌 260pt / 满屏放开）+ 加「满屏」入口 —— 原来写死 260pt，满屏视图里也只有 260pt、下面一片空白 ✗ |
 | ~~U2~~ | ~~写(Set) / 执行(Action) 加二次确认~~ | **已撤销** —— 用户明确表示**不需要**：现场操作要快，误点风险自担。代码里 `start()` 直接执行，不做确认弹窗。**本条不再实施** |
 | U3 | 结果与状态耦合在**字符串前缀**（`"完成 · "`）上，View 靠拆前缀取值 —— 状态文案里一旦出现同样字样就误判 | `GXDLMSReader` 新增 `onFinish(value, error)` 回调；状态栏只显示状态，解析结果走 `onFinish` |
 | U4 | **JSON 导入丢 `scaling`（量纲）**：`ImportEntry` 没有这个字段 | 补 `scaling`；同时 CSV 支持**可选的第 4/5 列（接口类、属性）**，与 JSON 口径对齐 |
@@ -429,7 +674,14 @@
 
 ---
 
-## 16. 真表抄表失败 + 长帧交互 诊断（2026-09-21，**仅诊断，未改码**）
+## 16. 真表抄表失败 + 长帧交互 诊断与修复（2026-09-21）
+
+> 本章按时间顺序保留**诊断过程**（含被证伪的假设 —— 留着是为了不再重犯）。
+> （小节号按写作顺序追加，故 **16.4 排在 16.3 前面**，引用时按编号找即可。）
+> **处置结果**：P1「抄表失败」= **HLS-GMAC + `信息加密=NONE`** 被库拒绝算 GMAC →
+> 已按 §5.2 的"切开算/打包"时序修复，**现场真表已用 `NONE` 关联成功并抄表** ✓；
+> P2「数据过长无法交互」= **R26（`bufAppend` 误用 `bb_insert`）** → 已根治 ✓；
+> P3「地址编码」= **R25** → 已按输入字节数定宽 ✓。
 
 现场：HDLC · 客户端 `01` · 通信地址 `0001` · 读 `1.0.1.8.0.255`。依据 4 张真机日志截图。
 
@@ -638,7 +890,7 @@ else if (value < 0x10000000) { address = 4 字节形式;                        
 | 步骤 | 状态 |
 |---|---|
 | ① 可观测性（步骤码 + 区分"发送失败"） | ✅ **已实现**（见下） |
-| ② 修 HLS 应答 | 依赖 ① 的现场复现结果 |
+| ② 修 HLS 应答 | ✅ **已实现**（v1.6）—— 根因是 `cip_encrypt` 的守卫拒绝 `security == NONE`；修法见 **§5.2**，真表实测结果见 **§7.1**（`信息加密 = NONE` 已关联成功并抄表） |
 | ③ 传输层预读缓冲 + 字符间超时断帧 | ✅ **已实现**（= 报告 D5） |
 | ④ 地址口径对齐 + **宽度按输入字节数自动判定**（v1.6 重做，取代原"手动宽度选择器"） | ✅ 已实现（见 R25） |
 
@@ -664,9 +916,120 @@ else if (value < 0x10000000) { address = 4 字节形式;                        
 **③ 传输层预读缓冲**：
 `GXDLMSTransport` 增加带锁的 `pending: Data`；`receive` 的 completion **无论是否超时都先入队**，
 `receive` 开头先消费队列。这样"超时后晚到的字节"不再永久丢失（原实现丢在已失效的局部变量里）。
+
+> ⚠️ **v1.7 补正**：这版实现有**内存安全问题**（**R29**，审核报告 v2 的 N1）——
+> `receive` 两处排空 `pending` 都**无视 `max`**，而回调 `copyBytes` 是无边界检查写入、
+> C 侧缓冲又是固定 `tmp[2048]` 栈数组 → **栈破坏**。
+> 已修为 `takePending(buf:max:)`（按 `max` 截断、余量留在 pending）+ 回调 `min(cap, count)` 兜底 +
+> `pendingLimit = 256KB`。**"预读"的语义本就是"取走本次要用的、余量留下"**，而不是整份排空。
 `connect()` / `cancel()` 会清空缓冲，避免新会话继承残留。
 
 ---
 
-*本方案为最终实现契约。**首个里程碑已达成**：CI 三道闸门全绿（C 单测 / 模拟器编译 / Swift 单测）→ 出未签名 IPA → Windows 用 Sideloadly 真机侧载成功。*
+## 17. 本地拟真台（v1.7，**本轮最有价值的工程投入**）
+
+### 17.1 动机
+
+历史事实：**所有真 bug 都在「协议 + 传输」这条链上**，UI 类问题（日志被挤成竖条）看一眼截图就够了、
+不值得自动化。但本机是 Windows（**没有 Swift 工具链、没有 iOS 模拟器**），而
+「回放测试一次给全帧」永远测不出**传输层**的问题 —— 于是形成了固定的循环：
+
+> 只有真机能发现的 bug → 跑一趟现场 → 改 → 再跑一趟现场
+
+拟真台把这个循环压成**本机 50 秒可复现**。
+
+### 17.2 组成
+
+| 文件 | 作用 |
+|---|---|
+| `tools/sock_compat.h` | Winsock / POSIX 差异收敛 + **带超时的可读等待**（对齐 App 侧 `receive` 的超时语义） |
+| **`tools/mock_meter.c`** | **本地模拟表**：按请求类型应答，且能制造坏链路 —— `--frag N` 分片、`--delay-ms` 间隔、`--silent-after N` 静默 |
+| **`Tests/CTests/local_e2e.c`** | **`DLMSBridge` + 真实 TCP** 跑完整会话：initialize → read → write → method → disconnect |
+| `Tests/CTests/run.sh` | 编排四步（见 §10.3） |
+
+- 只绑 **loopback**，Windows 下**不弹防火墙** ✓
+- 真 socket 的收包分段是**可控**的：服务端分 3 段发，客户端确实收 `2 bytes / 2 bytes`
+  —— 这正是"长帧被 TCP 拆开"的复现手段 ✓
+- 客户端连接**内部重试**（不用 `sleep 1` 等服务端起监听）→ 避免 CI 上偶发假失败。
+
+### 17.3 覆盖率（实测，`gcov`）
+
+| | 项目 `.c` 总覆盖率 | 桥接层 `DLMSBridge.c` | 0% 文件数 |
+|---|---|---|---|
+| 仅默认闸门 | 2.58% | 34.83% | 26 |
+| \+ 协议回放 | 8.45% | 56.31% | 18 |
+| **\+ 端到端（拟真台）** | **9.98%** | **70.87%** | 16 |
+
+**此前"从未被调用"的四个函数全部被拉起**：
+
+```
+dlms_read       0% → 92.9%      dlms_write   0% → 88.2%
+dlms_method     0% → 85.7%      dlms_disconnect 0% → 80%
+dlms_initialize 0% → 85%        ciphering.c  8.41% → 48.60%    apdu.c 0% → 33.29%
+```
+
+口径提醒：gcov 统计的是**可执行行**（`DLMSBridge.c` 约 511 行），不是物理行数（约 1235 行）。
+
+### 17.4 它抓到的第一个真 bug
+
+**R26（`bb_insert` 误用）** 就是靠它定位的 —— 而这个问题**在桩回放里永远不出现**（桩一次给全帧 →
+`size == 0` → 走 `bb_set` 分支，碰巧正确）。用 `--frag` 跑矩阵：
+
+| frag | 修复前 | 修复后（每档跑 2 次） |
+|---|---|---|
+| 8 / 16 / 16+5ms / 32 / 32+5ms | **step=4 ✗** 卡在 AARQ/AARE，send 20~66、超时 19~65 | **step=6 ✓ 2 send / 0 超时** |
+| 64 | step=4~6 抖动 | **step=6 ✓ 2 send** |
+| 96（= 整帧长度） | step=6 ✓ | step=6 ✓ |
+
+"只有整帧能通"这个形状 + `dlms_rxSize` 打印出 `size` 卡在首片长度 → 直接锁到 `bufAppend`。
+
+### 17.5 已知限制
+
+- **UI 渲染**（SwiftUI 视图/排版）本机**永远测不了** ✗ —— 但 bug 密度最低。
+- **Swift 传输层**（`GXDLMSTransport`）跑不了，但**行为能复现**（分段/超时是"字节流怎么切"的问题，
+  与用什么语言写无关）。纯逻辑部分（如 `takePending`）已用 Swift 单测覆盖。
+- 分片场景在 **R26 修复后**已从"已知退化/弱断言"升为**强断言**。
+
+---
+
+## 18. 《代码审核报告 v2》核对与处置（2026-09-24）
+
+对 `docs/代码审核报告-v2.md` **逐条 grep/读原文核实**（不采信报告的自述）。
+结论：**绝大部分属实，1 条判错、1 条低估**。
+
+### 18.1 核实属实（并已处置）
+
+- v1 对照里判"已修"的 **D1 / D2 / D3 / D4 / D5 / D6 / P1 / P2 / M1** 逐条对上了源 ✓
+- 新发现 **N1 / N2 / N3 / N4 / N5** 的事实描述**全部属实** ✓，处置见 **R29** 与下表：
+
+| 编号 | 处置 |
+|---|---|
+| **N1** 栈溢出 | **已修 ✓**（`a71adba`）—— 见 R29。⚠️ 报告的修法两条都对，但**低估了严重性**：它说"连续两次超时 → 4096"，实际因 completion 无法取消 + 可重试 256 轮，可达 `256×2048` |
+| **N2** `pending` 无上限 | **已修 ✓** —— `pendingLimit = 256KB`，超限丢最旧 |
+| **N3** `parseEntries` 裁剪口径不一致 | **已修 ✓** —— 改用与 `logs` 相同的高水位裁剪（`parseHighWater = 250`） |
+| **N4** 死代码 | **已修 ✓** —— 删除 `private enum Kind` 与 `check(_:step:)`（grep 确认两者都只有定义、无调用） |
+| **N5** 静默吞错 | **已修 ✓** —— `Store.load` 区分「文件不存在」（首次运行，静默）与「**存在但解析失败**」（记 warn）。写盘失败仍静默，已记入 §13.2 |
+
+### 18.2 ⚠️ 报告判错一条：S2
+
+报告把 **S2「导入文件无大小上限」标为「❌ 未改」** —— **实际早已修**：
+`ObisImporter.swift:14` `maxImportBytes = 1024*1024`、`:19` 超限即 `throw ImporterError.tooLarge`、
+`:139/144` 有对应错误文案。
+
+> **方法论**：对"未改 / 不存在"这类**否定性结论**要额外警惕 ——
+> 它只能证明"没找到"，不能证明"没有"。
+
+### 18.3 报告漏掉的
+
+- **N1 的放大器**（挂起的 completion 累积）—— 见 R29 的说明。
+- **`selectObis` 用原文匹配清单**（R30）—— 同批修掉。
+
+### 18.4 未纳入本轮
+
+报告里的 M2（trace 回传 command）、M5（ObisImporter 单测）、S1（Keychain）、
+mock Set-Response 保真度 —— 属"新增能力/加固"，非"已核实的问题"，留在 §13.2 待排期。
+
+---
+
+*本方案为最终实现契约。**里程碑**：CI 三道闸门全绿（C 单测 / 模拟器编译 / Swift 单测）→ 出未签名 IPA → Windows 用 Sideloadly 真机侧载 → **与真表完成 HLS-GMAC 关联 + 抄表（`信息加密 = NONE`）** ✓*
 *下一步按 §1 推进：P2（GUAK/GUEK 对真表验证密钥映射 · IC 同步 · Association View 列表 · 明文 PDU trace），并核销 §12 中 R20–R25。*
