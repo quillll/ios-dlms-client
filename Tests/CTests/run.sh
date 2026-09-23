@@ -73,14 +73,17 @@ run_e2e() {          # $1=scenario；其余参数转给 mock_meter
 E2E_ARGS=""
 run_e2e basic
 
-# ③ 分片场景：**已知退化**（实测重试暴涨、有时卡在 AARQ/AARE，且同一参数两次跑结果不同），
-#    故只要求"不崩不挂 + 重试有界"，并把 sends/recvs/timeouts 打出来作为量化证据。
-#    这里把 recv 超时压到 300ms —— 退化时会走大量超时重试，用 3000ms 会把闸门拖到几分钟。
+# ③ 分片场景（真实链路常态：响应被 TCP 拆成多段到达）—— 现在是**强断言**。
+#    这一档曾长期"退化"（重试暴涨、卡在 AARQ/AARE），根因是桥接层 bufAppend 误用
+#    bb_insert 做追加（它不更新 size、且把 index 当源偏移）—— 已修复，故按正常要求断言。
+#    recv 超时压到 300ms 以保持闸门快：正常路径不该出现超时（实测每档都是 0 次超时）。
 echo
-echo "=== ③ 分片退化观察（32B / 16B+10ms）—— 仅验不崩不挂与重试有界 ==="
+echo "=== ③ 分片场景（8 / 16+5ms / 32 / 64 字节）==="
 E2E_ARGS="--recv-timeout-ms 300"
-run_e2e fragile --frag 32
-run_e2e fragile --frag 16 --delay-ms 10
+run_e2e basic --frag 8
+run_e2e basic --frag 16 --delay-ms 5
+run_e2e basic --frag 32
+run_e2e basic --frag 64
 
 # ④ 对端应答 2 帧后静默：必须快速有界失败，不能挂死（同样用短超时保持闸门快）
 echo

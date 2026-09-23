@@ -38,6 +38,8 @@ typedef struct
     int recvTimeoutMs;
     int traceTx;                       // trace 回调收到的 TX/RX 次数
     int traceRx;
+    int dump;                          // --dump-rx：逐次打印接收缓冲的 size/position
+    dlmsCtx* ctx;                      // 供诊断查询（dlms_rxSize/dlms_rxPosition）
 } Io;
 
 // 与 dlmsSendFn 对齐
@@ -72,6 +74,13 @@ static int ioRecv(void* user, unsigned char* buf, int cap, int* got)
     if (n <= 0) { return -1; }
     if (got != NULL) { *got = n; }
     io->recvs++;
+    if (io->dump)
+    {
+        // 打印的是**本次 append 之前**的累积状态：若库在"数据不够"时正确回退了游标，
+        // 这里应看到 size 递增而 position 恒为 0。
+        printf("     [rx] recv#%d got=%d  ->  size=%d position=%d\n",
+               io->recvs, n, dlms_rxSize(io->ctx), dlms_rxPosition(io->ctx));
+    }
     return 0;
 }
 
@@ -97,7 +106,6 @@ int main(int argc, char** argv)
     dlmsCtx* c;
     char out[4096];
     int outLen, r1, r2, r3, r4, r5;
-    int weak = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
     memset(&io, 0, sizeof(io));
@@ -107,13 +115,15 @@ int main(int argc, char** argv)
         if (!strcmp(argv[i], "--port") && i + 1 < argc) { port = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--scenario") && i + 1 < argc) { scenario = argv[++i]; }
         else if (!strcmp(argv[i], "--recv-timeout-ms") && i + 1 < argc) { io.recvTimeoutMs = atoi(argv[++i]); }
+        else if (!strcmp(argv[i], "--dump-rx")) { io.dump = 1; }
         else { printf("e2e: 未知参数 %s\n", argv[i]); return 1; }
     }
     // scenario 白名单：未知值直接报错退出，避免悄悄按某个分支跑
-    if (!strcmp(scenario, "basic")) { weak = 0; }
-    else if (!strcmp(scenario, "fragile")) { weak = 1; }
-    else if (!strcmp(scenario, "silent")) { weak = 1; }
-    else { printf("e2e: 未知 scenario '%s'（应为 basic/fragile/silent）\n", scenario); return 1; }
+    if (strcmp(scenario, "basic") != 0 && strcmp(scenario, "silent") != 0)
+    {
+        printf("e2e: 未知 scenario '%s'（应为 basic/silent）\n", scenario);
+        return 1;
+    }
     printf("[e2e] scenario=%s port=%d recvTimeout=%dms\n", scenario, port, io.recvTimeoutMs);
 
     if (sock_init() != 0) { printf("e2e: socket init failed\n"); return 1; }
@@ -152,6 +162,7 @@ int main(int argc, char** argv)
     dlms_set_clientSystemTitle(c, "4142433132333435");       // "ABC12345"
     dlms_set_io(c, &io, ioSend, ioRecv);
     dlms_set_trace(c, &io, ioTrace);
+    io.ctx = c;                        // 供 --dump-rx 查询接收缓冲状态
 
     printf("[e2e] 建链…\n");
     r1 = dlms_initialize(c);
@@ -162,34 +173,23 @@ int main(int argc, char** argv)
     // 所以下面不再用 CHECK(1,...) 制造"看起来验证过"的假象，只把事实打出来。
     printf("  ·  dlms_initialize 已返回（未崩溃/未挂死）\n");
 
-    if (!weak)
-    {
-        CHECK(r1 == DLMS_ERROR_CODE_OK || dlms_lastStep(c) >= 5,
-              "e2e: Wrapper 建链已越过 AARQ/AARE");
-    }
-
     if (strcmp(scenario, "silent") != 0)
     {
+        // 建链：Wrapper 下 AARQ/AARE 必须过（step>4）。
+        // 这一条对**分片到货**同样成立 —— 分片曾是长期"已知退化"，根因是桥接层
+        // bufAppend 误用 bb_insert（它不更新 size、把 index 当源偏移），已修复。
+        CHECK(r1 == DLMS_ERROR_CODE_OK || dlms_lastStep(c) >= 5,
+              "e2e: Wrapper 建链已越过 AARQ/AARE（含响应被 TCP 拆开的场景）");
+
         outLen = (int)sizeof(out);
         out[0] = '\0';
         r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
         printf("[e2e] read ret=%d(%s) outLen=%d\n", r2, dlms_error_string(r2), outLen);
         printf("  ·  dlms_read 已返回（未崩溃/未挂死）\n");
-        CHECK(r2 != DLMS_ERROR_CODE_INVALID_PARAMETER,
-              "e2e: dlms_read 参数有效、请求已生成（非 INVALID_PARAMETER）");
-        if (!weak)
-        {
-            CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
-                  "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
-            CHECK(strstr(out, "类型") != NULL && strstr(out, "值") != NULL,
-                  "e2e: 解析面板拿到四行块（类型/值…）");
-        }
-        else
-        {
-            printf("[e2e] fragile：仅断言不崩不挂 + 重试有界；上面的 sends/recvs 即退化量化证据\n");
-            CHECK(io.sends < 1000 && io.recvTimeouts < 1000,
-                  "e2e: 分片退化下重试仍有界（未失控死循环）");
-        }
+        CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
+              "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
+        CHECK(strstr(out, "类型") != NULL && strstr(out, "值") != NULL,
+              "e2e: 解析面板拿到四行块（类型/值…）");
 
         outLen = (int)sizeof(out);
         r3 = dlms_write(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2,
@@ -227,8 +227,9 @@ int main(int argc, char** argv)
 
     // trace 回调被真正调用了（同时覆盖 dlms_set_trace）
     CHECK(io.traceTx > 0 && io.traceRx > 0, "e2e: trace 回调有 TX/RX（dlms_set_trace 生效）");
-    printf("[e2e] 收发统计: send=%d recv=%d txBytes=%d timeouts=%d trace=%d/%d\n",
-           io.sends, io.recvs, io.txBytes, io.recvTimeouts, io.traceTx, io.traceRx);
+    printf("[e2e] 收发统计: send=%d recv=%d txBytes=%d timeouts=%d trace=%d/%d rx=%d/%d\n",
+           io.sends, io.recvs, io.txBytes, io.recvTimeouts, io.traceTx, io.traceRx,
+           dlms_rxSize(c), dlms_rxPosition(c));
 
     dlms_free(c);
     sock_close(fd);

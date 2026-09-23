@@ -106,6 +106,12 @@ int dlms_lastStep(dlmsCtx* ctx);
 int dlms_sendFailed(dlmsCtx* ctx);
 const char* dlms_step_name(int step);
 
+// 接收累积缓冲的当前状态（只读，纯诊断）。
+// 用途：排查"响应被 TCP 分片后收不全"这类问题 —— 在 recv 回调里打印它们，
+// 就能看到游标是否被正确回退（库的 dlms_getTcpData 在数据不够时会把 position 回退）。
+int dlms_rxSize(dlmsCtx* ctx);
+int dlms_rxPosition(dlmsCtx* ctx);
+
 // 读数展示：DLMS_DATA_TYPE 值 → 可读类型名（静态字符串）。
 // 单独暴露是为了让 C 单测能直接断言类型名表（防止改名/漏项悄悄发生）。
 const char* dlms_dataTypeName(int dataType);

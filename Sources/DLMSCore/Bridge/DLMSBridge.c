@@ -4,7 +4,8 @@
 //  所有组帧/APDU/建链状态机都在这里；Swift 仅通过 send/recv 回调提供 TCP 字节。
 //
 //  v1.2 要点：
-//   - 接收缓冲为 ctx 上跨 recv 持久化的累积缓冲，追加(bb_insert)而非覆盖(bb_set)，
+//   - 接收缓冲为 ctx 上跨 recv 持久化的累积缓冲，追加语义（见 bufAppend 里为何
+//     不能用 bb_insert），不覆盖(bb_set)，
 //     容量按需增长，杜绝大 PDU 分段丢帧(R10/R11)。
 //   - 建链按 interfaceType 分支，Wrapper 不发 SNRM(R18)；认证>LOW 追加 HLS challenge(R12)。
 //   - 断链先 RLRQ(release2) 再 DISC(M1)。
@@ -93,7 +94,18 @@ static int bufAppend(dlmsCtx* c, const unsigned char* src, uint32_t len)
             return r;
         }
     }
-    return bb_insert(src, len, rx, rx->size);
+    // ⚠️ 这里**不能**用 bb_insert 做追加 —— 它并不是"追加"语义：
+    //     · 实现是 memmove(target->data + index, src + index, count)，
+    //       第四个参数 index 同时被当作「目标插入点」和「**源数据偏移**」；
+    //     · 而且它**不更新 target->size**。
+    //    库里所有调用都传 index=0（bb_insert(LLC_REPLY_BYTES, 3, data, 0) 等），
+    //    此时 memmove 才退化为正确的 (dst, src, count)。
+    //    我们原来传的是 index = rx->size(≠0) → 源偏移错 + size 永不增长
+    //    → 表现为"响应一旦被 TCP 拆开就再也收不全"（长数据无法交互的根因）。
+    //    改为手工追加，语义一目了然。
+    memcpy(rx->data + rx->size, src, len);
+    rx->size += len;
+    return 0;
 }
 
 // 单帧接收的**总轮次上限**。
@@ -285,6 +297,17 @@ int dlms_lastStep(dlmsCtx* c)
 int dlms_sendFailed(dlmsCtx* c)
 {
     return (c == NULL) ? 0 : c->sendFailed;
+}
+
+// 接收缓冲的 size/position（只读诊断）。见 DLMSCore.h 的说明。
+int dlms_rxSize(dlmsCtx* c)
+{
+    return (c == NULL) ? 0 : (int)c->rx.size;
+}
+
+int dlms_rxPosition(dlmsCtx* c)
+{
+    return (c == NULL) ? 0 : (int)c->rx.position;
 }
 
 const char* dlms_step_name(int step)

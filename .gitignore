@@ -12,5 +12,10 @@ xcuserdata/
 *.ipa
 *.dSYM
 
+# 覆盖率产物（gcov：跑 --coverage 时会在当前目录留下这些，别提交）
+*.gcda
+*.gcno
+*.gcov
+
 .workbuddy/memory/
 .vscode/
