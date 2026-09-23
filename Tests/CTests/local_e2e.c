@@ -3,13 +3,14 @@
 // 为什么需要它：绝大多数真 bug 都不在 UI，而在“协议 + 传输”这条链上
 // （写/action 崩溃、HLS 明文/加密之争、长响应被 TCP 拆开丢数据…）。
 // 但这条链过去只有两条验证途径：① 桩回放（不经真实 socket）② 真表（慢、不可控）。
-// 这个程序补上中间那层：**真 socket + 可控的坏链路行为**，在本机即可复现，
-// 也顺便覆盖到此前 0% 的 dlms_read / dlms_write / dlms_method / dlms_disconnect。
+// 这个程序补上中间那层：**真 socket + 可控的坏链路行为**，在本机即可复现。
 //
 // 用法（由 Tests/CTests/run.sh 编排）：
-//   local_e2e [--port N] [--scenario basic|silent]
-//     basic  ：正常会话（connect → 读 → 写 → 执行 → 断开）
-//     silent ：模拟表在若干帧后不再应答 —— 验证客户端**有界退出**（不挂死）
+//   local_e2e [--port N] [--scenario basic|fragile|silent] [--recv-timeout-ms N]
+//     basic  ：正常会话（connect → 读 → 写 → 执行 → 断开），**强断言**
+//     fragile：分片退化观察，只断言"不崩不挂 + 重试有界"
+//     silent ：模拟表若干帧后不再应答 —— 验证客户端**有界退出**（不挂死）
+//     --recv-timeout-ms：单次 recv 等待上限（默认 3000，与 App 侧一致）
 //
 // 退出码：0 全过；非 0 = 失败数。
 
@@ -34,6 +35,9 @@ typedef struct
     int recvs;
     int txBytes;
     int recvTimeouts;
+    int recvTimeoutMs;
+    int traceTx;                       // trace 回调收到的 TX/RX 次数
+    int traceRx;
 } Io;
 
 // 与 dlmsSendFn 对齐
@@ -59,7 +63,7 @@ static int ioRecv(void* user, unsigned char* buf, int cap, int* got)
     Io* io = (Io*)user;
     int n;
     if (got != NULL) { *got = 0; }
-    if (!sock_wait_readable(io->fd, 300))
+    if (!sock_wait_readable(io->fd, io->recvTimeoutMs))
     {
         io->recvTimeouts++;
         return -1;
@@ -71,41 +75,68 @@ static int ioRecv(void* user, unsigned char* buf, int cap, int* got)
     return 0;
 }
 
+// 与 dlmsTraceFn 对齐（direction 1=TX / 2=RX）。挂上它同时覆盖 dlms_set_trace。
+static void ioTrace(void* user, int direction, const unsigned char* frame, int len)
+{
+    Io* io = (Io*)user;
+    (void)frame; (void)len;
+    if (direction == 1) { io->traceTx++; }
+    else { io->traceRx++; }
+}
+
 // 0.0.40.0.0.255 —— Association LN
 static const unsigned char OBIS_ASSOC[6] = { 0, 0, 40, 0, 0, 255 };
 
 int main(int argc, char** argv)
 {
-    int port = 40599, i;
+    int port = 40599, i, tryConnect;
     const char* scenario = "basic";
-    sock_t fd;
+    sock_t fd = SOCK_INVALID;
     struct sockaddr_in a;
     Io io;
     dlmsCtx* c;
     char out[4096];
-    int outLen, r1, r2, r3, r4;
+    int outLen, r1, r2, r3, r4, r5;
+    int weak = 0;
 
     setvbuf(stdout, NULL, _IONBF, 0);
+    memset(&io, 0, sizeof(io));
+    io.recvTimeoutMs = 3000;              // 默认对齐 App 侧；压力场景由 run.sh 调小
     for (i = 1; i < argc; i++)
     {
         if (!strcmp(argv[i], "--port") && i + 1 < argc) { port = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--scenario") && i + 1 < argc) { scenario = argv[++i]; }
+        else if (!strcmp(argv[i], "--recv-timeout-ms") && i + 1 < argc) { io.recvTimeoutMs = atoi(argv[++i]); }
+        else { printf("e2e: 未知参数 %s\n", argv[i]); return 1; }
     }
-    printf("[e2e] scenario=%s port=%d\n", scenario, port);
+    // scenario 白名单：未知值直接报错退出，避免悄悄按某个分支跑
+    if (!strcmp(scenario, "basic")) { weak = 0; }
+    else if (!strcmp(scenario, "fragile")) { weak = 1; }
+    else if (!strcmp(scenario, "silent")) { weak = 1; }
+    else { printf("e2e: 未知 scenario '%s'（应为 basic/fragile/silent）\n", scenario); return 1; }
+    printf("[e2e] scenario=%s port=%d recvTimeout=%dms\n", scenario, port, io.recvTimeoutMs);
 
     if (sock_init() != 0) { printf("e2e: socket init failed\n"); return 1; }
-    fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd == SOCK_INVALID) { printf("e2e: socket() failed\n"); return 1; }
     memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET;
     a.sin_port = htons((unsigned short)port);
     a.sin_addr.s_addr = inet_addr("127.0.0.1");
-    if (connect(fd, (struct sockaddr*)&a, sizeof(a)) != 0)
+
+    // 重试连接：不再依赖外层脚本 `sleep`（慢机器/CI 上会变成假失败）
+    for (tryConnect = 0; tryConnect < 50; tryConnect++)
     {
-        printf("e2e: connect 127.0.0.1:%d failed（mock_meter 起了吗？）\n", port);
+        fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (fd == SOCK_INVALID) { printf("e2e: socket() failed\n"); return 1; }
+        if (connect(fd, (struct sockaddr*)&a, sizeof(a)) == 0) { break; }
+        sock_close(fd);
+        fd = SOCK_INVALID;
+        sock_sleep_ms(100);
+    }
+    if (fd == SOCK_INVALID)
+    {
+        printf("e2e: 连不上 127.0.0.1:%d（重试 %d 次后放弃）——mock_meter 起了吗？\n", port, tryConnect);
         return 1;
     }
-    memset(&io, 0, sizeof(io));
     io.fd = fd;
     printf("[e2e] connected\n");
 
@@ -120,47 +151,41 @@ int main(int argc, char** argv)
                       NULL);
     dlms_set_clientSystemTitle(c, "4142433132333435");       // "ABC12345"
     dlms_set_io(c, &io, ioSend, ioRecv);
+    dlms_set_trace(c, &io, ioTrace);
 
     printf("[e2e] 建链…\n");
     r1 = dlms_initialize(c);
-    printf("[e2e] initialize ret=%d step=%d(%s) sendFailed=%d sends=%d recvs=%d timeouts=%d\n",
-           r1, dlms_lastStep(c), dlms_step_name(dlms_lastStep(c)),
+    printf("[e2e] initialize ret=%d(%s) step=%d(%s) sendFailed=%d sends=%d recvs=%d timeouts=%d\n",
+           r1, dlms_error_string(r1), dlms_lastStep(c), dlms_step_name(dlms_lastStep(c)),
            dlms_sendFailed(c), io.sends, io.recvs, io.recvTimeouts);
-    CHECK(1, "e2e: dlms_initialize 未崩溃、未挂死");
-    CHECK(io.sends >= 1, "e2e: 确实发出了请求（真 socket）");
+    // 能执行到这里本身就证明了"未崩溃、未挂死"（崩了/挂了都到不了这行）——
+    // 所以下面不再用 CHECK(1,...) 制造"看起来验证过"的假象，只把事实打出来。
+    printf("  ·  dlms_initialize 已返回（未崩溃/未挂死）\n");
 
-    if (strcmp(scenario, "silent") == 0)
+    if (!weak)
     {
-        // 模拟表已不应答：这里必须**快速有界失败**，不能挂住。
-        // 有界性来自两处：recv 超时 4 次（fail>3）+ dlmsSendFrame 的总轮次上限。
-        outLen = (int)sizeof(out);
-        r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
-        printf("[e2e] silent 场景 read ret=%d，timeouts=%d\n", r2, io.recvTimeouts);
-        CHECK(r2 != DLMS_ERROR_CODE_OK, "e2e: 对端静默时返回错误（而非挂死）");
-        CHECK(io.recvTimeouts > 0, "e2e: 走的是超时路径");
+        CHECK(r1 == DLMS_ERROR_CODE_OK || dlms_lastStep(c) >= 5,
+              "e2e: Wrapper 建链已越过 AARQ/AARE");
     }
-    else
-    {
-        // fragile 场景（极小分片 + 间隔）：只断言"不崩不挂"，重试次数打出来供观察。
-        // 原因：实测小分片下重试会暴涨甚至卡在 AARQ/AARE —— 属**待查的已知问题**，
-        // 不在这里硬断言成功，否则闸门会因一个未定性问题长期变红。
-        int strong = (strcmp(scenario, "fragile") != 0);
 
+    if (strcmp(scenario, "silent") != 0)
+    {
         outLen = (int)sizeof(out);
+        out[0] = '\0';
         r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
-        printf("[e2e] read ret=%d outLen=%d\n", r2, outLen);
-        CHECK(1, "e2e: dlms_read 未崩溃、未挂死（经真 socket 收响应）");
-        if (strong)
+        printf("[e2e] read ret=%d(%s) outLen=%d\n", r2, dlms_error_string(r2), outLen);
+        printf("  ·  dlms_read 已返回（未崩溃/未挂死）\n");
+        CHECK(r2 != DLMS_ERROR_CODE_INVALID_PARAMETER,
+              "e2e: dlms_read 参数有效、请求已生成（非 INVALID_PARAMETER）");
+        if (!weak)
         {
-            CHECK(r1 == DLMS_ERROR_CODE_OK || dlms_lastStep(c) >= 5,
-                  "e2e: Wrapper 建链已越过 AARQ/AARE");
             CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
                   "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
+            CHECK(strstr(out, "类型") != NULL && strstr(out, "值") != NULL,
+                  "e2e: 解析面板拿到四行块（类型/值…）");
         }
         else
         {
-            // 退化场景仍要有**硬约束**：重试必须是有界的（否则就是失控的死循环）。
-            // 上界来自两处：recv 超时 4 次即重发 + dlmsSendFrame 的总轮次上限 256。
             printf("[e2e] fragile：仅断言不崩不挂 + 重试有界；上面的 sends/recvs 即退化量化证据\n");
             CHECK(io.sends < 1000 && io.recvTimeouts < 1000,
                   "e2e: 分片退化下重试仍有界（未失控死循环）");
@@ -169,21 +194,41 @@ int main(int argc, char** argv)
         outLen = (int)sizeof(out);
         r3 = dlms_write(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2,
                         "01020304", out, &outLen);
-        printf("[e2e] write ret=%d\n", r3);
-        CHECK(1, "e2e: dlms_write 未崩溃（历史崩溃点：byteArr 未分配）");
+        printf("[e2e] write ret=%d(%s)\n", r3, dlms_error_string(r3));
+        // 真实断言：过了参数校验并生成出请求，就说明 variant 构造没走错
+        //（历史崩溃点正是 buildBytesVariant 里的 byteArr 未分配）。
+        CHECK(r3 != DLMS_ERROR_CODE_INVALID_PARAMETER,
+              "e2e: dlms_write 请求已生成（历史崩溃点：byteArr 未分配）");
 
         outLen = (int)sizeof(out);
         r4 = dlms_method(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 1,
                          "0908112233", out, &outLen);
-        printf("[e2e] method ret=%d\n", r4);
-        CHECK(1, "e2e: dlms_method 未崩溃（历史崩溃点同源）");
+        printf("[e2e] method ret=%d(%s)\n", r4, dlms_error_string(r4));
+        CHECK(r4 != DLMS_ERROR_CODE_INVALID_PARAMETER,
+              "e2e: dlms_method 请求已生成（同源崩溃点）");
+    }
+    else
+    {
+        // 模拟表已不应答：必须**快速有界失败**，不能挂住。
+        // 有界性来自两处：recv 超时 4 次（fail>3）+ dlmsSendFrame 的总轮次上限。
+        outLen = (int)sizeof(out);
+        r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
+        printf("[e2e] silent 场景 read ret=%d(%s)，timeouts=%d\n",
+               r2, dlms_error_string(r2), io.recvTimeouts);
+        CHECK(r2 != DLMS_ERROR_CODE_OK, "e2e: 对端静默时返回错误（而非挂死）");
+        CHECK(io.recvTimeouts > 0, "e2e: 走的是超时路径");
     }
 
     printf("[e2e] 断链…\n");
-    dlms_disconnect(c);
-    CHECK(1, "e2e: dlms_disconnect 未崩溃、未挂死");
-    printf("[e2e] 收发统计: send=%d recv=%d txBytes=%d recvTimeouts=%d\n",
-           io.sends, io.recvs, io.txBytes, io.recvTimeouts);
+    r5 = dlms_disconnect(c);
+    printf("[e2e] disconnect ret=%d(%s)\n", r5, dlms_error_string(r5));
+    CHECK(r5 != DLMS_ERROR_CODE_INVALID_PARAMETER,
+          "e2e: dlms_disconnect 已返回且参数有效（未崩溃/未挂死）");
+
+    // trace 回调被真正调用了（同时覆盖 dlms_set_trace）
+    CHECK(io.traceTx > 0 && io.traceRx > 0, "e2e: trace 回调有 TX/RX（dlms_set_trace 生效）");
+    printf("[e2e] 收发统计: send=%d recv=%d txBytes=%d timeouts=%d trace=%d/%d\n",
+           io.sends, io.recvs, io.txBytes, io.recvTimeouts, io.traceTx, io.traceRx);
 
     dlms_free(c);
     sock_close(fd);

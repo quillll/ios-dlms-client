@@ -68,6 +68,12 @@ enum
 };
 
 // 追加到 rx 末尾，必要时先扩容。
+// 单帧累积字节上限。
+// `DLMS_MAX_RECV_ROUNDS` 只约束"收几轮"、约束不了"收多少字节"：异常对端持续吐数据时
+// rx 缓冲会一直增长。256KB 远超任何合法单帧（maxPduSize 一般 ≤ 64KB，
+// 且按 1448B 分段也才 ~45 轮），所以只在异常情况下触发。
+#define DLMS_MAX_RX_BYTES (256u * 1024u)
+
 static int bufAppend(dlmsCtx* c, const unsigned char* src, uint32_t len)
 {
     if (len == 0)
@@ -75,6 +81,10 @@ static int bufAppend(dlmsCtx* c, const unsigned char* src, uint32_t len)
         return 0;
     }
     gxByteBuffer* rx = &c->rx;
+    if (rx->size + len > DLMS_MAX_RX_BYTES)
+    {
+        return DLMS_ERROR_CODE_RECEIVE_FAILED;
+    }
     if (rx->size + len > rx->capacity)
     {
         int r = bb_capacity(rx, rx->size + len + 256);
@@ -869,9 +879,16 @@ int dlms_write(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned ch
     dlmsVARIANT v;
     gxReplyData reply;
     message msg;
+    // 先 var_init：这样失败路径可以无条件 var_clear，不会读到未初始化内存。
+    var_init(&v);
     ret = buildBytesVariant(&v, hex);
     if (ret != DLMS_ERROR_CODE_OK)
     {
+        // ★ 必须释放：buildBytesVariant 在返回错误前**可能已经分配了 byteArr**
+        //   （setOctetStringVariant 里 gxmalloc 成功、随后 bb_set 失败的情形）。
+        //   直接 return 会漏掉那个 gxByteBuffer。
+        //   注意顺序 —— 若没有上面的 var_init，这里的 var_clear 会读未初始化内存。
+        var_clear(&v);
         return ret;
     }
     reply_init(&reply);
@@ -1012,6 +1029,8 @@ int dlms_method(dlmsCtx* c, const unsigned char* obis, uint16_t type, unsigned c
         ret = buildVariantFromHex(hex, &v);
         if (ret != DLMS_ERROR_CODE_OK)
         {
+            // 同 dlms_write：失败前可能已分配 byteArr，必须释放（v 已 var_init，安全）。
+            var_clear(&v);
             return ret;
         }
         param = &v;

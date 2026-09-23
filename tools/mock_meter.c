@@ -25,8 +25,14 @@
 #define ACC_CAP 8192
 
 // 8 字节 Wrapper 头：00 01 | source(2) | target(2) | length(2)，随后是 length 字节 payload。
-static int wrapFrame(unsigned char* out, unsigned char* pl, int plLen, int src, int tgt)
+// 返回整帧长度；放不下时返回 -1（**不静默溢出**）。
+static int wrapFrame(unsigned char* out, int cap, const unsigned char* pl, int plLen,
+                     int src, int tgt)
 {
+    if (plLen < 0 || 8 + plLen > cap)
+    {
+        return -1;
+    }
     out[0] = 0x00; out[1] = 0x01;
     out[2] = (unsigned char)((src >> 8) & 0xFF); out[3] = (unsigned char)(src & 0xFF);
     out[4] = (unsigned char)((tgt >> 8) & 0xFF); out[5] = (unsigned char)(tgt & 0xFF);
@@ -59,9 +65,10 @@ static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0xC1, 0x00, 0x01, 0x00 };
 static unsigned char GET_OK_PL[] = { 0xC4, 0x01, 0xC1, 0x00, 0x01, 0x00, 0x09, 0x01, 0x2A };
 // Set-Response：invoke-id=1、result=0(成功)。
 static unsigned char SET_OK_PL[] = { 0xC5, 0x01, 0x00 };
-// Release/Disconnect 的应答。
-static unsigned char REL_OK_PL[] = { 0x64, 0x01, 0x00 };
-static unsigned char DISC_OK_PL[] = { 0x63, 0x01, 0x00 };
+// Release-Response。依据 enums.h:1228/1233：RELEASE_REQUEST=0x62 / RELEASE_RESPONSE=0x63。
+// 注意方向：0x62 才是**请求**、0x63 是**响应** —— 客户端不会把 0x63 当请求发出来，
+// 所以下面不为 0x63 配规则（早期版本写成 0x63→0x64，两个都不是 release 语义，是错的）。
+static unsigned char REL_OK_PL[] = { 0x63, 0x01, 0x00 };
 
 static int contains(const unsigned char* hay, int n, const unsigned char* needle, int m)
 {
@@ -75,21 +82,22 @@ static int contains(const unsigned char* hay, int n, const unsigned char* needle
     return 0;
 }
 
-// 按请求内容挑一个响应。返回 payload 长度，*ppl 指向 payload。
-static int pickResponse(const unsigned char* pl, int plLen, unsigned char** ppl)
+// 按请求内容挑一个响应。返回响应 payload 长度，*respOut 指向 payload（0 = 不应答）。
+// 入参/出参**刻意用不同名字**：早期版本写成 `plLen = pickResponse(pl, plLen, &pl)`，
+// 实参与出参同名 —— C 语义正确（实参先求值）但极易被后来人改错。
+static int pickResponse(const unsigned char* req, int reqLen, unsigned char** respOut)
 {
     static const unsigned char HLS_ACT[] = { 0xC3, 0x01, 0xC1, 0x00, 0x0F };
     static const unsigned char HLS_GLO[] = { 0xCB, 0x01, 0xC1, 0x00, 0x0F };
-    if (plLen <= 0) { return 0; }
-    if (pl[0] == 0x60) { *ppl = AARE_PL; return (int)sizeof(AARE_PL); }            // AARQ
-    if (contains(pl, plLen, HLS_ACT, 5) || contains(pl, plLen, HLS_GLO, 5))
-    { *ppl = HLS_OK_PL; return (int)sizeof(HLS_OK_PL); }                           // HLS 认证
-    if (pl[0] == 0xC0 || contains(pl, plLen, HLS_ACT, 5))                          // Get-Request
-    { *ppl = GET_OK_PL; return (int)sizeof(GET_OK_PL); }
-    if (pl[0] == 0xC1) { *ppl = SET_OK_PL; return (int)sizeof(SET_OK_PL); }        // Set-Request
-    if (pl[0] == 0x63) { *ppl = REL_OK_PL; return (int)sizeof(REL_OK_PL); }        // release
-    if (pl[0] == 0x62) { *ppl = DISC_OK_PL; return (int)sizeof(DISC_OK_PL); }      // disconnect
-    return 0;                                                                      // 其他：不应答
+    if (reqLen <= 0) { return 0; }
+    if (req[0] == 0x60) { *respOut = AARE_PL; return (int)sizeof(AARE_PL); }        // AARQ → AARE
+    if (contains(req, reqLen, HLS_ACT, 5) || contains(req, reqLen, HLS_GLO, 5))
+    { *respOut = HLS_OK_PL; return (int)sizeof(HLS_OK_PL); }                        // HLS 认证
+    // tag 取值已核对 enums.h：GET_REQUEST=0xC0、SET_REQUEST=0xC1、RELEASE_REQUEST=0x62。
+    if (req[0] == 0xC0) { *respOut = GET_OK_PL; return (int)sizeof(GET_OK_PL); }    // Get-Request
+    if (req[0] == 0xC1) { *respOut = SET_OK_PL; return (int)sizeof(SET_OK_PL); }    // Set-Request
+    if (req[0] == 0x62) { *respOut = REL_OK_PL; return (int)sizeof(REL_OK_PL); }    // Release-Request
+    return 0;                                                                       // 其他：不应答
 }
 
 int main(int argc, char** argv)
@@ -135,7 +143,9 @@ int main(int argc, char** argv)
     // 主循环：累积字节 → 凑出一个完整 Wrapper 帧 → 按规则应答（可分段）
     for (;;)
     {
-        int n, plLen; unsigned char* pl = NULL; int total;
+        int n, plLen, respLen, total;
+        unsigned char* pl = NULL;
+        unsigned char* respPl = NULL;
         if (!sock_wait_readable(cli, 2000))
         {
             printf("mock: idle timeout, closing (reqs=%d replies=%d)\n", reqs, replies);
@@ -158,18 +168,29 @@ int main(int argc, char** argv)
         {
             printf("mock: req#%d len=%d tag=%02X\n", reqs, plLen, (plLen > 0 ? pl[0] : 0));
         }
-        // 消费该帧（把剩余字节前移）
-        memmove(acc, acc + 8 + plLen, (size_t)(accLen - 8 - plLen));
-        accLen -= 8 + plLen;
 
+        // ★ 必须在消费该帧**之前**决定响应。
+        //   下面的 memmove 会把后续字节前移：只要缓冲区里堆了两帧（客户端重传/粘包时很常见），
+        //   pl 指向的内容就会被覆盖，拿被覆盖的字节去匹配规则会给出错误响应。
+        //   早期版本先 memmove 再 pickResponse —— 只有"缓冲区里恰好只有一帧"时才碰巧正确，
+        //   这很可能就是分片场景下 mock 行为不稳定的来源。
+        respLen = 0;
         if (silentAfter > 0 && replies >= silentAfter)
         {
             if (!quiet) { printf("mock: 已达 --silent-after=%d，不再应答（测客户端有界退出）\n", silentAfter); }
-            continue;
         }
-        plLen = pickResponse(pl, plLen, &pl);
-        if (plLen <= 0) { if (!quiet) { printf("mock: 无匹配规则，不应答\n"); } continue; }
-        total = wrapFrame(out, pl, plLen, 1, 1);
+        else
+        {
+            respLen = pickResponse(pl, plLen, &respPl);
+        }
+
+        // 消费该帧（把剩余字节前移）—— 此后 pl 不再有效
+        memmove(acc, acc + 8 + plLen, (size_t)(accLen - 8 - plLen));
+        accLen -= 8 + plLen;
+
+        if (respLen <= 0) { if (!quiet) { printf("mock: 无匹配规则，不应答\n"); } continue; }
+        total = wrapFrame(out, (int)sizeof(out), respPl, respLen, 1, 1);
+        if (total <= 0) { printf("mock: 响应放不下缓冲，丢弃\n"); continue; }
         if (frag > 0)
         {
             int off = 0, k = 0;
