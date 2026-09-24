@@ -1,7 +1,13 @@
-# DLMS 抄表调试台 iOS —— 详细方案（v1.7）
+# DLMS 抄表调试台 iOS —— 详细方案（v1.8）
 
 > 状态：**App 已在真机侧载运行，并与真表完成 HLS-GMAC 关联 + 抄表**（CI 三道闸门全绿 → 出未签名 IPA → Windows 用 Sideloadly 侧载）。
 > 最新版本号 **1.2 (build 3)**（真源 `project.yml` 的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`，主界面右上角常显）。
+>
+> **v1.8 变更**（本机 Swift 闸门 + CI 转绿）：
+> ㉝ **装上 Swift for Windows（6.4）**，新增本地类型检查闸门 `tools/swift_typecheck.sh` —— 纯 Foundation 的三个文件（`DLMSModels.swift` / `ObisImporter.swift` / `AppInfo.swift`）**约 3 秒出结果**，取代"改完等 CI（约 5 分钟）" → **§19**；
+> ㉞ **修掉「连续三次 CI 红」的最后一步**：`Decoder.container(keyedBy:)` 漏 `try`（**R34**，`6a4b0d1`）→ **CI + 出包工作流双双 success** ✓；
+> ㉟ 闸门上线后**立刻抓到 CI 抓不到的一个真问题**：`dlmsValue` 里 `try?` flatten 后仍写 `??`（死代码，**只是 warning 所以前三次 CI 都没报**）→ 已改为零 error 零 warning → **R33**、**§19.5**；
+> ㊱ 记录两个工具链环境坑（**R35**）：代理变量大小写撞键导致 `swiftc` 直接 fatal、`-sdk` 路径须为 Windows 风格。
 >
 > **v1.7 变更**（本地拟真台 + 长帧/分片根治 + 解析面板 + 地址定宽 + OBIS 数据）：
 > ㉕ **修掉「数据过长无法交互」的根因**：`bufAppend` 误用 `bb_insert` 做追加 → 分片到达时 `rx.size` 永不增长。详见 **R26**；现场四档分片矩阵复现并根治（`c6d1ff8`）；
@@ -43,6 +49,7 @@
 | 8 | 把"只读不写"的旧键放进 `CodingKeys` | **不能** ✗ —— 合成 `encode(to:)` 会为**每一个 case** 去找同名存储属性，找不到就整份不满足 `Encodable`，而报错只落在 struct 声明行（**完全指不到那个 case**）。旧键要另开一个 enum（如 `LegacyKeys`）**只用于解码** | CI 红两次（R32） |
 | 9 | 写 `try?` 时按"会嵌套成双层 Optional"推理 | **Swift 5 起 `try?` 对已是 Optional 的结果会 flatten**（SE-0230）→ `try? f()` 的类型就是 `T?`，别再写第二个 `let`（`if let x = try? f(), let x` ✗）。**本机没有编译器时，宁可换成 `do/catch`** —— 多两行，换零歧义 | CI 又红一轮（R33） |
 | 10 | 某个 API 是否 `throws` / 是否 Optional，**凭记忆判断** | **别猜** —— ① **同文件/同项目里往往就有现成反例**：这次的 `try decoder.container(keyedBy:)` 就在**同一函数的第一行**，照抄即可；② 可用 CI 的报错反推（CI **没报**某行 ⇒ 那行的写法是对的）。<br>**具体事实（两侧不对称）**：`Decoder.container(keyedBy:)` **是 `throws`**，`Encoder.container(keyedBy:)` **不是** | CI 又红一轮（R34） |
+| 11 | 以为"本机装不了 Swift 工具链，Swift 代码只能等 CI" | **已不成立** ✓（2026-09-24 装上 Swift 6.4 for Windows）。**改 Swift 前先跑 `bash tools/swift_typecheck.sh`**（约 3 秒）：纯 Foundation 的三个文件（`DLMSModels.swift` / `ObisImporter.swift` / `AppInfo.swift`）可本地 typecheck，**三次 CI 红全在这几个文件里**。<br>⚠️ 两个调用坑：① 必须 `env -u http_proxy -u https_proxy`（本机大小写两组代理变量撞键 → swiftc 直接 fatal）② 必须传 `-sdk` 且用 **Windows 风格路径**。<br>⚠️ **能力边界**：`Store.swift`(Combine) / `GXDLMS*`(Network) / `DLMSApp/*`(SwiftUI) / `Tests/SwiftTests`(XCTest) **仍只能靠 CI** ✗ —— 这些地方继续遵守"朴素写法"原则 | 白等 CI 多轮（一轮约 5 分钟） |
 
 ---
 
@@ -595,8 +602,9 @@ python3 tools/chk_codingkeys.py <repo根> # 显式指定
 | **R30** | **OBIS 写法差异导致静默匹配失败**：清单里是点分归一形态（`1.0.1.8.0.255`），「最近 OBIS」存的是用户当初的输入原文（可能 `1-0:1.8.0*255`）→ 按原文比较**永远查不到** → 选中后类/属性/请求数据全带不过来；下拉里同一对象还会出现两条 | **已修 ✓**（`8c16bcc`）。新增 `ObisUtil.comparisonKey`（去空白 + 大写 + `- : * ,` → `.`），**匹配与记录两处都走它**。凡涉及 OBIS 的比较/去重一律用它 |
 | **R31** | **测试脚手架 `buildHdlc` 的 HCS 算错**（先用 `0x00` 占位算 HCS、之后才回填长度，而 HDLC 的 **HCS 必须覆盖真实长度字节**）→ 库校验不过**静默跳过该帧** → `reply->complete` 恒为 0 → `dlmsSendFrame` **死循环**（`fail` 在"收到数据"时归零，唯一守卫失效） | **已修 ✓**（`af449aa`）。先定长再算 HCS。**用现场真实 UA 帧独立验证**：`HCS(A0 1E 03 03 73)=CC40` → 线上 `40 CC` ✓ 与抓包一致。生产侧同时加 `DLMS_MAX_RECV_ROUNDS=256` 兜底（防"对端持续吐数据却构不成可接受帧"）|
 | **R32** | **`CodingKeys` 里放了没有对应存储属性的键** → 合成的 `encode(to:)` 为每个 case 找同名属性、找不到就整份不满足 `Encodable`；**报错只落在 struct 声明行，完全指不到那个 case** | **已修 ✓**（`f...`，2026-09-24）。已淘汰、只读不写的旧键移到独立的 `LegacyKeys`（只解码不编码）。**CI 为此红过两次**（先是 `serverAddressWidth`，半修后又栽在 `serverAddress`）；判据已写成脚本 `tools/chk_codingkeys.py` 可在本地/CI 拦住 —— **见 §10.4** |
-| **R33** | **本机没有编译器时"猜语言行为"** —— 这次是 `try?` 的 flatten 语义（SE-0230）：`try? f()` 对已是 Optional 的结果**不再嵌套**，写成 `if let x = try? f(), let x` 会报 "must have Optional type" | **已修 ✓**（`29b5b19`）改用 `do/catch` 避开歧义。**规则：本机编不了 Swift 时，一律写最朴素的等价形式**（拆步赋值、显式类型、避免 `try?` + 条件绑定组合）。同类已全项目排查：`try?` 只剩 4 处、全为单层 `guard let` ✓ |
-| **R34** | **凭记忆判断 API 是否 `throws`** —— `Decoder.container(keyedBy:)` **是 `throws`**（`Encoder.container(keyedBy:)` **不是**，两侧不对称），漏写 `try` 报 "call can throw but is not marked with 'try'" | **已修 ✓**（`f...`）。**判据优先级**：① 同文件/同项目里的现成用法（这次的正确写法就在同一函数第一行，照抄即可）② CI 报错反推（**没报**的行 ⇒ 写法是对的）③ 最后才是查文档/记忆 |
+| **R33** | **本机没有编译器时"猜语言行为"** —— 这次是 `try?` 的 flatten 语义（SE-0230）：`try? f()` 对已是 Optional 的结果**不再嵌套**，写成 `if let x = try? f(), let x` 会报 "must have Optional type" | **已修 ✓**（`29b5b19`）改用 `do/catch` 避开歧义。**规则：本机编不了 Swift 时，一律写最朴素的等价形式**（拆步赋值、显式类型、避免 `try?` + 条件绑定组合）。同类已全项目排查：`try?` 只剩 4 处、全为单层 `guard let` ✓<br>**后续补充（2026-09-24）**：本地闸门 `tools/swift_typecheck.sh` 上线后，**同一个 flatten 语义又抓出第 3 处** —— `dlmsValue` helper 里 `guard let v = try? …` 之后仍写了 `return v ?? fallback`（右侧死代码，编译器 warning，**前三次 CI 都没抓到，因为它是 warning 不是 error**）→ 已改 `return v` 并加注释 ✓ **这是本地闸门立的头功** |
+| **R34** | **凭记忆判断 API 是否 `throws`** —— `Decoder.container(keyedBy:)` **是 `throws`**（`Encoder.container(keyedBy:)` **不是**，两侧不对称），漏写 `try` 报 "call can throw but is not marked with 'try'" | **已修 ✓**（`6a4b0d1`，CI 已绿 ✓）。**判据优先级**：① 同文件/同项目里的现成用法（这次的正确写法就在同一函数第一行，照抄即可）② CI 报错反推（**没报**的行 ⇒ 写法是对的）③ 最后才是查文档/记忆。<br>**③ 之前得补一条（更优先）**：**本地跑一遍** `bash tools/swift_typecheck.sh` —— 该脚本已用"注入此错误"做过反向自测，能逐字复现这条报错 ✓ |
+| **R35** | **本机 Swift 工具链有环境陷阱** —— ① 同时存在 `HTTP_PROXY` 与 `http_proxy` 时，swiftc **连 `--version` 都跑不了**，直接 `Fatal error: Duplicate values for key 'ProcessEnvironmentKey(value: "HTTP_PROXY")'`（Swift 5.9+ 构造环境字典大小写敏感，撞键即崩）；② 不传 `-sdk` 报 `unable to load standard library for target`；③ `-sdk` 传 Git Bash 风格的 `/c/...` 不认，必须 Windows 风格 | **已在 `tools/swift_typecheck.sh` 里封装掉 ✓**：`env -u http_proxy -u https_proxy` 剔除小写组（大写保留，代理照常工作）、`cygpath -w` 转换 SDK 路径、自动定位工具链（找不到即 skip 而非报错）。**别人用这个环境时直接调脚本即可，别手敲 swiftc 命令** |
 
 
 ---
@@ -711,7 +719,7 @@ python3 tools/chk_codingkeys.py <repo根> # 显式指定
 
 - **C 层（D1/D2/D3/M1）**：本地 `gcc -Wall` 全量编译 + 链接 + 跑 `Tests/CTests/test_dlms.c`
   → `LINK_EXIT=0`、`ALL PASS`、`DLMSBridge.c` **零告警**（且能过编译本身即证明改名无遗漏）。
-- **Swift 层（D4/D6/P1/P2/M3/S2）**：本机无 Swift 工具链，只能靠 CI（`macOS` 模拟器编译 + Swift 单测）兜底。
+- **Swift 层（D4/D6/P1/P2/M3/S2）**：CI（`macOS` 模拟器编译 + Swift 单测）兜底；**纯 Foundation 的三个文件（`DLMSModels.swift` / `ObisImporter.swift` / `AppInfo.swift`）另有本地闸门** `tools/swift_typecheck.sh`（2026-09-24 起可用 ✓）。其余（Combine / Network / SwiftUI / XCTest）仍只能靠 CI ✗。
 
 ---
 
@@ -1069,6 +1077,82 @@ dlms_initialize 0% → 85%        ciphering.c  8.41% → 48.60%    apdu.c 0% →
 
 报告里的 M2（trace 回传 command）、M5（ObisImporter 单测）、S1（Keychain）、
 mock Set-Response 保真度 —— 属"新增能力/加固"，非"已核实的问题"，留在 §13.2 待排期。
+
+---
+
+## 19. 本地 Swift 类型检查闸门（v1.8，2026-09-24）
+
+### 19.1 起因：连续三次 CI 红，全部同一类错误
+
+| 提交 | 错在哪 | 本质 | 风险编号 |
+|---|---|---|---|
+| `8c16bcc`→`60d2f23` | `CodingKeys` 放了无对应存储属性的键 | 语义规则（报错指不到 case） | R32 |
+| `60d2f23`→`29b5b19` | `try?` 的 flatten（SE-0230） | 语言细节 | R33 |
+| `29b5b19`→`6a4b0d1` | `Decoder.container` 漏 `try` | 语言细节 | R34 |
+
+**共同点：三次全落在 `Sources/DLMSModels/DLMSModels.swift`** —— 而该文件**只 import Foundation**。
+→ 意味着**它本可以在 Windows 上单独 typecheck**，三次红本都能在本地 3 秒内拦下。
+这是本轮最该记的教训：**"本机没有编译器"这个前提从头到尾就不成立**，只是没去装。
+
+### 19.2 工具链与两个环境坑
+
+Swift 6.4 for Windows 装于 `%LOCALAPPDATA%\Programs\Swift`，`swiftc.exe` 在
+`Toolchains/6.4.0+Asserts/usr/bin/`。**直接调用会连 `--version` 都崩** ✗，两处坑：
+
+| 坑 | 症状 | 解决 |
+|---|---|---|
+| **代理变量大小写撞键** | `Swift/NativeDictionary.swift:823: Fatal error: Duplicate values for key 'ProcessEnvironmentKey(value: "HTTP_PROXY")'` | 本机同时有 `HTTP_PROXY` 与 `http_proxy`，Swift 5.9+ 构造环境字典**大小写敏感** → `env -u http_proxy -u https_proxy`（大写保留，代理照常工作） |
+| **缺 `-sdk`** | `error: unable to load standard library for target 'x86_64-unknown-windows-msvc'` | 传 `-sdk <...>\Platforms\6.4.0\Windows.platform\Developer\SDKs\Windows.sdk`，且必须是 **Windows 风格路径**（Git Bash 的 `/c/...` 不认，用 `cygpath -w` 转） |
+
+### 19.3 闸门：`tools/swift_typecheck.sh`
+
+把上述封装成一条命令：自动定位工具链（找不到则 **skip 而非报错**，便于别人无 Swift 时也能跑）
+→ 剔小写代理 → 转 SDK 路径 → 对三个文件**联合编译**（分开编译会报
+`cannot find type 'ObisItem' in scope`，那是跨文件依赖缺失、不是缺陷）
+→ **warning 也算失败**。
+
+**覆盖范围（Windows SDK 的硬边界）**：
+
+| 文件 | 本机可查 | 原因 |
+|---|---|---|
+| `Sources/DLMSModels/DLMSModels.swift` | ✅ | 只 import Foundation |
+| `DLMSApp/Support/ObisImporter.swift` | ✅ | 只用 Foundation（依赖 `ObisItem`，故需联合编译） |
+| `DLMSApp/Support/AppInfo.swift` | ✅ | 只 import Foundation |
+| `Sources/DLMSModels/Store.swift` | ❌ | `import Combine`（Apple 独占） |
+| `Sources/DLMSBridge/*.swift` | ❌ | `Network` / `DLMSCore` |
+| `DLMSApp/*.swift`（UI） | ❌ | `SwiftUI` |
+| `Tests/SwiftTests/*` | ❌ | XCTest + 依赖上述 |
+
+> ⚠️ **边界即纪律**：上表标 ❌ 的地方**仍然只能靠 CI**，改它们时继续遵守
+> "只写最朴素、零歧义的写法"（§0 第 9/10 条）。
+
+### 19.4 反向自测（关键步骤，不可省）
+
+分不清"真通过"与"假通过"的闸门等于没有闸门 → 必须注入已知错误验证它会拦：
+
+| 注入 | 期望 | 实测 |
+|---|---|---|
+| `let legacyContainer = decoder.container(...)`（去掉 `try`） | exit 1，报 R34 那种错 | ✓ **逐字复现 CI 第三次红的那条报错**（含行号 289 与 did-you-mean 提示） |
+| `return v ?? fallback`（`try?` flatten 后多余 `??`） | exit 1（warning 拦截） | ✓ 命中 `left side of nil coalescing operator '??' has non-optional type 'T'` |
+| 恢复原状 | exit 0 | ✓ |
+
+### 19.5 上线后立刻抓到的真 bug（R33 的第 3 例）
+
+`DLMSModels.swift` 的 `dlmsValue` helper：
+```swift
+guard let v = try? decodeIfPresent(T.self, forKey: key) else { return fallback }
+return v ?? fallback   // ✗ 死代码：v 已是 T，右侧永不执行
+```
+又是 SE-0230 flatten —— **而前三次 CI 全都没抓到，因为它是 warning 不是 error** ✗
+→ 改 `return v` 并加注释说明为何不能再写 `??`，现为**零 error 零 warning**。
+
+> **这是闸门价值的直接证据**：一个 CI 抓不到、只有本地开启 warning 检查才现形的问题。
+
+### 19.6 验收
+
+`6a4b0d1` 的 CI **全绿** ✓：
+- `CI` run#30 **success** —— 闸门1+3「编译（模拟器·不签名）」✓、「**Swift 单测（模拟器）**」✓（50 条全过）、闸门2「C 单测（Linux）」✓；被 skip 的 4 个步骤全是「仅失败时运行」的诊断项。
+- `出包 · 未签名 IPA` run#15 **success** ✓。
 
 ---
 

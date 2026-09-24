@@ -478,9 +478,11 @@ struct ConnectionConfig: Codable, Identifiable, Equatable {
 
 // 缺键 / 类型不符 → 回退默认值（Decodable 合成实现不会这么做，故手写）。
 private extension KeyedDecodingContainer {
+    /// 注意：`try? decodeIfPresent(T.self,...)` 在 SE-0230 下已 flatten 成 `T?`，
+    /// 所以 guard let 之后的 v 就是 T，**不能再写 `v ?? fallback`**（右侧永不执行，编译器会警告）。
     func dlmsValue<T: Decodable>(_ key: Key, _ fallback: T) -> T {
         guard let v = try? decodeIfPresent(T.self, forKey: key) else { return fallback }
-        return v ?? fallback
+        return v
     }
 }
 
