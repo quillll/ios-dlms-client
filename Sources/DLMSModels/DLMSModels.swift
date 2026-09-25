@@ -573,6 +573,34 @@ enum ObisUtil {
     }
 }
 
+// MARK: - 解析面板块的取值
+
+/// 解析 C 层 `dlms_renderValue` 产出的**两行块**。
+///
+/// 该格式由**单一生产者**约定（`DLMSBridge.c` 的 `dlms_renderValue`）：
+///   行 1 = 带类型标签的 HEX
+///   行 2 = `-> Type: <类型名>[, Length: n], Value: <可读值>`
+///
+/// 所以按 `", Value: "` 切分是**确定性的** —— 这不是"从自由文本里猜值"。
+/// （状态栏要用「纯值」回显刚读到的结果，见 `docs/UI评审-核对报告.md` 的 B1。）
+enum ParseBlock {
+    /// 取纯值（如 `GRX3` / `123.4`）；取不到返回 nil，调用方回退为「不显示值」。
+    static func valuePart(of block: String) -> String? {
+        var lastLine = ""
+        for line in block.split(separator: "\n") {
+            lastLine = String(line)
+        }
+        guard !lastLine.isEmpty else { return nil }
+        guard let found = lastLine.range(of: ", Value: ") else { return nil }
+        let raw = String(lastLine[found.upperBound...])
+        // 用 .whitespacesAndNewlines 而非 .whitespaces：后者**不含 `\r`**
+        //（`\r` 属于 .newlines）—— 若数据里是 CRLF，值尾部会残留一个 `\r`。
+        // C 层目前只发 LF，但这里顺手挡住（实测过：用 .whitespaces 时 "9\r" != "9"）。
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
 // MARK: - 格式化小工具
 extension UInt32 {
     /// 2 位 hex（源/目标地址无 ANSI 前缀处理器）。
