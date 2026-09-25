@@ -1,7 +1,27 @@
-# DLMS 抄表调试台 iOS —— 详细方案（v1.8）
+# DLMS 抄表调试台 iOS —— 详细方案（v1.9）
 
 > 状态：**App 已在真机侧载运行，并与真表完成 HLS-GMAC 关联 + 抄表**（CI 三道闸门全绿 → 出未签名 IPA → Windows 用 Sideloadly 侧载）。
 > 最新版本号 **1.2 (build 3)**（真源 `project.yml` 的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`，主界面右上角常显）。
+>
+> **v1.9 变更**（UI 改进按原型落地；依据 `docs/UI评审-核对报告.md`，已剔除评审报告中判错的 3 处）：
+> ㊲ **输入框全部加常驻标签**（主界面 4 处 + OBIS 编辑器 6 处）—— 原来只靠 placeholder 当标签，
+> 默认值一填就把它顶掉，满屏裸框分不清哪个是「类」（真机截图 IMG_9243 / IMG_9249 就是这个样子）→ **§20**；
+> ㊳ **输入提示从独占行挪到标签行右侧**（共省 3 行 ≈ 56pt）：OBIS 的「6 段已识别」、
+> 请求数据的「留空 = 无参数」；细则「选 OBIS 会自动填入」搬进该字段的 **placeholder**
+>（placeholder 只在字段为空时可见 —— 正是这条信息唯一有用的时刻，等于零成本保留）；
+> ㊴ **状态栏补「时间 · 名称 = 值」**：值由 `onFinish` 显式供给，新增纯函数 `ParseBlock.valuePart`
+> 从 C 层 `dlms_renderValue` 的两行块里取纯值（**不从状态文本拆前缀** —— 那是 v1.5 刻意去掉的脆弱做法）→ **§20**；
+> ㊵ **「执行」按钮配色修正**：`Color.secondary.opacity(0.35)`（白字压 35% 灰，**对比度极低、看起来像禁用**，
+> 外部评审正是被这点误导）→ `.orange`；保留原方案的「读紫 / 写蓝」三色编码 → **§20**、核对报告 B2；
+> ㊶ **面板内嵌高度 260 → 340**；报文类型列加 **ⓘ** + 长按说明其为启发式识别（**R20**）；
+> ㊷ **OBIS 清单**：行 1 不再重复显示 code（**R37**）· 加搜索框（名称 / 代码，代码按 `comparisonKey` 归一匹配）·
+> 行内加**复制**按钮、加大点击目标（**滑动删除本来就有**，不重复加）· `delete(at:)` 改按**过滤后**的列表取索引（否则搜索时会删错条目）；
+> ㊸ **连接参数页**：「认证方式」与「信息加密」并入同一个**「安全」** Section 相邻两行（脚注写明**两者独立配置、互不影响**）；
+> 删除底部重复的「解析使能」Section（只留解析面板 header 那一处）；
+> ㊹ 修正两处**文档与代码不一致**：§3 布局图「HEX 四列」→「三列 + HEX 独占整行」、R24 占位符（见该条）；
+> ㊺ 新登记 **R36**（类/属性零校验 + 兜底口径不统一 + 全程静默，**待处理**）与 **R37**（清单 code 重复，已修）。
+>
+> ❌ **已否决（用户，2026-09-25）**：密钥遮罩 / `SecureField` —— 「密钥明文遮罩不用」（自用调试台，现场核对明文更快）。**不再提**。
 >
 > **v1.8 变更**（本机 Swift 闸门 + CI 转绿）：
 > ㉝ **装上 Swift for Windows（6.4）**，新增本地类型检查闸门 `tools/swift_typecheck.sh` —— 纯 Foundation 的三个文件（`DLMSModels.swift` / `ObisImporter.swift` / `AppInfo.swift`）**约 3 秒出结果**，取代"改完等 CI（约 5 分钟）" → **§19**；
@@ -118,7 +138,7 @@
 │   09 03 31 32 33                     │ ← 行1：带类型的原始 HEX
 │   -> Type: octet-string, Length: 3, Value: 123 │ ← 行2：人类可读
 │   （「解析使能」关闭时只留行1）           │
-│ 报文面板（时间│TX·RX│类型│HEX 四列 + 独立滚动 + 满屏）│
+│ 报文面板（时间│TX·RX│类型ⓘ 三列；HEX 独占整行 + 独立滚动 + 满屏）│
 └──────────────────────────────────────┘
 ```
 
@@ -178,7 +198,10 @@
 
 > 顺序即录入习惯：先认"这是什么" → 再定位"到哪里取" → 最后补"怎么换算 / 怎么下发"。
 > 量纲单独成字段（`ObisItem.scaling`），便于后续把 `value × 10^scaler` 的换算做进展示层。
-> ⚠️ 接口类输入框的占位文字写的是 `Data=1`，但该串含 `=` **无法被解析**（保存时会静默保留原值）—— 见 R24。
+> ⚠️ 接口类输入框的占位文字历史上有过 `Data=1`（含 `=` **无法被解析**）—— 见 R24。
+> **v1.9 起**：接口类**不再预填默认值**（原来预填 `1` + 保存时静默采纳，会把新增的 `0.0.42.x`
+> 存成 1 类 → 之后读到的是**另一个对象**），且 `save()` 校验必填；6 个字段全部加**常驻标签**
+>（原来只靠 placeholder 当标签，默认值一填就把它顶掉，满屏是 `1` / `0.0.1.0.0.255` / `2` 三个裸行）。
 
 **「请求数据」字段（v1.7）**：
 
@@ -593,7 +616,7 @@ python3 tools/chk_codingkeys.py <repo根> # 显式指定
 | R21 | `dlms_set_security` 参数名仍叫 `akekHex`/`authKeyHex`，而 aKEK 口径已废 | 纯改名不影响行为（C 参数名不影响 ABI，也不影响 Swift 调用）。建议改为 `guekHex`/`guakHex`；当前靠 `DLMSCore.h` 注释兜底 |
 | R22 | **密钥长度未校验**：`hexToBytes` 走 `bb_addHexString`，任意长度都接受 | AES-128 需 **16 字节**。UI 已有字节数提示（`HexUtil.isValid`），但 bridge 未拦截 → 建议 bridge 校验长度并返回错误码，别让错长度密钥进到 cipher |
 | R23 | 整数越界曾直接 **trap 崩溃**（`UInt16(x)`/`UInt8(x)` 是非夹取转换） | v1.4 已修：C 边界统一 `UInt16(clamping:)` / `UInt8(clamping:)`（类填 99999、属性填 300、端口填 99999 不再闪退） |
-| R24 | OBIS 编辑器接口类占位符写 `Data=1`，该串含 `=` **无法解析** → 保存时静默保留旧值 | v1.4 已改为可解析的示例（`3 / 0x1F`） |
+| R24 | OBIS 编辑器接口类占位符写 `Data=1`，该串含 `=` **无法解析** → 保存时静默保留旧值 | v1.4 已改为可解析的示例。**v1.9 起**占位符为「如 1（Data）/ 3（Register）/ 42（SAP Assignment）」，且接口类**不再预填、`save()` 校验必填**（原来预填 `1` + 静默采纳会把新增的 `0.0.42.x` 存成 1 类）。⚠️ 此前**文档写 `3 / 0x1F`、代码实际是 `1 / 0x1F`**（外部评审核对时提出的正是这点），已在 v1.9 一并统一 |
 | R25 | 地址"1 字节 / 2 字节"**无法用数值区分**（`01` 与 `0001` 都是 `0x01`） | **v1.6 已解决 ✓**：`serverAddress` 不再用 `UInt32`，改为**保留原始输入串** `serverAddressHex` —— 宽度 = 输入字节数（1/2/4；3 字节等非法，UI 标红）。拆分规则：1 字节=仅逻辑地址；2 字节=逻辑/物理各 1；4 字节=各 2。Gurux 仍按数值量级定宽，故 UI 用 `serverAddressWidthMatched` 提示"输入宽度 ≠ 实际宽度"（见 R16） |
 | **R26** | **`bb_insert` 被当作"追加"用** —— 它的 `index` 同时是「目标插入点」和「源数据偏移」（`memmove(target->data+index, src+index, count)`），且**从不更新 `target->size`**。库里所有调用都传 `index=0` 才碰巧正确 | **已修 ✓**（`c6d1ff8`）。`bufAppend` 改为手工追加（`bb_capacity` → `memcpy` → `size += len`）。**症状特征：短响应（一次 recv 到齐）正常，一旦被 TCP 拆开就永远收不全** —— 这正是现场报的「数据过长无法交互」✓ 定位靠**分片矩阵实验**（8/16/32 字节全挂、96 字节=整帧才成功）+ `dlms_rxSize` 打印出 `size` 卡在首片长度 |
 | **R27** | **`bb_clear` 不检查 `arr` 本身**（只查 `arr->data`），而 `var_init` 把 `byteArr` 置 `NULL` → `bb_clear(NULL)` 读 `NULL->data` 崩溃。两条路径：写（`buildBytesVariant`）、action（`buildVariantFromHex` 先设了 `vt` → `var_addBytes` 跳过分配分支走 else） | **已修 ✓**（`7e9770e`）。新增 `setOctetStringVariant()`：照库自身约定 `gxmalloc(sizeof(gxByteBuffer))` + `bb_init` + `bb_set`；两处调用点统一用它。**判据**：OCTET_STRING variant 的 `byteArr` **必须堆分配** —— 写/action 一点就崩、读路径没事（读不构造 variant） |
@@ -604,7 +627,9 @@ python3 tools/chk_codingkeys.py <repo根> # 显式指定
 | **R32** | **`CodingKeys` 里放了没有对应存储属性的键** → 合成的 `encode(to:)` 为每个 case 找同名属性、找不到就整份不满足 `Encodable`；**报错只落在 struct 声明行，完全指不到那个 case** | **已修 ✓**（`f...`，2026-09-24）。已淘汰、只读不写的旧键移到独立的 `LegacyKeys`（只解码不编码）。**CI 为此红过两次**（先是 `serverAddressWidth`，半修后又栽在 `serverAddress`）；判据已写成脚本 `tools/chk_codingkeys.py` 可在本地/CI 拦住 —— **见 §10.4** |
 | **R33** | **本机没有编译器时"猜语言行为"** —— 这次是 `try?` 的 flatten 语义（SE-0230）：`try? f()` 对已是 Optional 的结果**不再嵌套**，写成 `if let x = try? f(), let x` 会报 "must have Optional type" | **已修 ✓**（`29b5b19`）改用 `do/catch` 避开歧义。**规则：本机编不了 Swift 时，一律写最朴素的等价形式**（拆步赋值、显式类型、避免 `try?` + 条件绑定组合）。同类已全项目排查：`try?` 只剩 4 处、全为单层 `guard let` ✓<br>**后续补充（2026-09-24）**：本地闸门 `tools/swift_typecheck.sh` 上线后，**同一个 flatten 语义又抓出第 3 处** —— `dlmsValue` helper 里 `guard let v = try? …` 之后仍写了 `return v ?? fallback`（右侧死代码，编译器 warning，**前三次 CI 都没抓到，因为它是 warning 不是 error**）→ 已改 `return v` 并加注释 ✓ **这是本地闸门立的头功** |
 | **R34** | **凭记忆判断 API 是否 `throws`** —— `Decoder.container(keyedBy:)` **是 `throws`**（`Encoder.container(keyedBy:)` **不是**，两侧不对称），漏写 `try` 报 "call can throw but is not marked with 'try'" | **已修 ✓**（`6a4b0d1`，CI 已绿 ✓）。**判据优先级**：① 同文件/同项目里的现成用法（这次的正确写法就在同一函数第一行，照抄即可）② CI 报错反推（**没报**的行 ⇒ 写法是对的）③ 最后才是查文档/记忆。<br>**③ 之前得补一条（更优先）**：**本地跑一遍** `bash tools/swift_typecheck.sh` —— 该脚本已用"注入此错误"做过反向自测，能逐字复现这条报错 ✓ |
-| **R35** | **本机 Swift 工具链有环境陷阱** —— ① 同时存在 `HTTP_PROXY` 与 `http_proxy` 时，swiftc **连 `--version` 都跑不了**，直接 `Fatal error: Duplicate values for key 'ProcessEnvironmentKey(value: "HTTP_PROXY")'`（Swift 5.9+ 构造环境字典大小写敏感，撞键即崩）；② 不传 `-sdk` 报 `unable to load standard library for target`；③ `-sdk` 传 Git Bash 风格的 `/c/...` 不认，必须 Windows 风格 | **已在 `tools/swift_typecheck.sh` 里封装掉 ✓**：`env -u http_proxy -u https_proxy` 剔除小写组（大写保留，代理照常工作）、`cygpath -w` 转换 SDK 路径、自动定位工具链（找不到即 skip 而非报错）。**别人用这个环境时直接调脚本即可，别手敲 swiftc 命令** |
+| **R35** | **本机 Swift 工具链有环境陷阱** —— ① 同时存在 `HTTP_PROXY` 与 `http_proxy` 时，swiftc **连 `--version` 都跑不了**，直接 `Fatal error: Duplicate values for key 'ProcessEnvironmentKey(value: "HTTP_PROXY")'`（Swift 5.9+ 构造环境字典大小写敏感，撞键即崩）；② 不传 `-sdk` 报 `unable to load standard library for target`；③ `-sdk` 传 Git Bash 风格的 `/c/...` 不认，必须 Windows 风格 | **已在 `tools/swift_typecheck.sh` 里封装掉 ✓**：`env -u http_proxy -u https_proxy` 剔除小写组（大写保留，代理照常工作）、`cygpath -w` 转换 SDK 路径、自动定位工具链（找不到即 skip 而非报错）。**别人用这个环境时直接调脚本即可，别手敲 swiftc** |
+| **R36** | **类/属性两个字段零校验、零提示，且"兜底"有 6 处、结果还不一致** —— `NumberInput.parse` 失败时 `?? 1`；但**负数解析成功**、只是被 `UInt16(clamping:)` 夹成 **0**；`>65535` 夹成 **65535**；`"1e3"` 因 `e` 命中 `a-f` 按 hex 解析成 **483**。且 `cl_readLN` 只校验 `attributeOrdinal < 1`，**类连 0 都照发**。全程静默 —— `MainView` 里没有 `classHint`，界面显示 `1.5` 而实际发的是类 1 | **待处理**。主界面**已补常驻标签 + 提示上移**（见 §20），但**兜底口径尚未统一**。建议：类/属性加 `classHint` 显式回显生效值；解析失败改为**明确报错并阻止发送**，不再静默替换。**完整实测数据见 `docs/UI评审-核对报告.md` §3.4** |
+| **R37** | **OBIS 清单把 code 显示了两次** —— `ObisItem.displayName` 是 `"名称 · code"`，而清单行 2 又是 `code · unit` → 同一行里 code 出现两遍、白占一行 | **已修 ✓**（`3b6df7f`）。清单行 1 改用 `item.name`。**注意 `displayName` 本身保留** —— 主界面下拉菜单用它（那里只有一行，带上 code 反而有用），改的是清单的渲染 |
 
 
 ---
@@ -1193,5 +1218,64 @@ return v ?? fallback   // ✗ 死代码：v 已是 T，右侧永不执行
 
 ---
 
+## 20. UI 改进落地（v1.9，2026-09-25）
+
+### 20.1 来历
+
+外部 7 张真机截图 + 一份 UI 评审报告 → 我逐条核对（**结论：报告主体成立，但有 3 处判错、1 处夸大、
+1 处引用被反证；另发现 3 处报告漏掉的**）→ 出 `docs/UI评审-核对报告.md`（完整判定）
+→ 按核实后的清单做 `docs/UI改进原型.html`（**可交互**：7 个标签页、现状/改进后并排、可切换按钮方案）
+→ 用户评估后定稿 → 落地代码。
+
+> **方法论**：外部评审最常见的两类失误 —— ① 拿**过期的文档**当现状（报告 D 就是被 §3 那张过期的
+> 「HEX 四列」布局图带偏的）② 把**视觉观感**当**状态机事实**（报告 B2 把一支配色当成"按钮被禁用"）。
+> 核对时**以源码为准，文档只作参考**。
+
+### 20.2 落地清单
+
+| # | 改动 | 说明 |
+|---|---|---|
+| 1 | **输入框常驻标签** ×10（主界面 4 + 编辑器 6） | 原来只靠 placeholder 当标签，默认值一填就顶掉它 |
+| 2 | **提示上移到标签行右侧** | 「6 段已识别」「留空 = 无参数」各占一行 → 共省 3 行 ≈ 56pt |
+| 3 | 细则进 **placeholder** | 「选 OBIS 会自动填入」只在字段为空时有用，而 placeholder 正好只在空时可见 |
+| 4 | **状态栏回显值** | `● 完成 · 10:35:08 · 设备ID = GRX3`；值经 `ParseBlock.valuePart` 取纯值 |
+| 5 | **「执行」按钮 → 橙** | 原 `Color.secondary.opacity(0.35)` = 白字压 35% 灰、**看起来像禁用**；保留读紫/写蓝三色编码 |
+| 6 | 面板高度 260 → **340** | ⚠️ **有取舍**：加高只是让"被裁掉的部分"变多，视觉差别不大；靠第 2 条省下的 56pt 抵掉。实机觉得滚太多就改回（两处） |
+| 7 | 报文类型列 **ⓘ** | 长按说明「启发式识别、可能误标（R20）」；该列本就是灰色，不额外弱化 |
+| 8 | **「安全」Section** | 认证方式 + 信息加密相邻两行；脚注写**两者独立配置、互不影响** |
+| 9 | 删参数页「解析使能」 | 只留解析面板 header；状态仍持久化 |
+| 10 | 清单行 1 去掉重复 code | 见 **R37** |
+| 11 | 清单搜索框 | 名称按大小写不敏感包含；代码按 `comparisonKey` **归一后**匹配 |
+| 12 | 清单复制按钮 + 加大行高 | **滑动删除本来就有**（`.onDelete`），不重复加 |
+| 13 | 编辑器常驻标签 | 同第 1 条 |
+| 14 | 接口类**不再预填** + 校验必填 | 原来预填 `1` + 静默采纳 → 新增 `0.0.42.x` 被存成 1 类、**读到另一个对象** |
+
+### 20.3 一个容易忽略的连带 bug（自查时抓到）
+
+清单加了搜索框后，`.onDelete` 给的 `offsets` 是**过滤后数组**的下标，
+而原实现是 `store.obisLibrary[i]` —— **搜索状态下会删错条目** ✗
+→ 已改为先取 `let list = filtered` 再按 `list[i].id` 删。
+
+> **规律**：给一个列表加过滤/排序时，**所有按下标取值的地方都要一起改**（删除、移动、编辑回填）。
+> 这类 bug 不会在"无过滤"路径上暴露，只有搜索时才现形。
+
+### 20.4 验证方式
+
+- **可本地验的**：`ParseBlock.valuePart` 是纯逻辑 → 本机编译**真实实现** + 逐条跑 11 个用例
+ （含值里带逗号、带空格、CRLF、多空行）全通过；**实测抓到 CRLF 残留 `\r`** 的问题并修掉
+ （`CharacterSet.whitespaces` **不含 `\r`**，它属于 `.newlines`）→ 用例已固化为 XCTest 9 条供 CI 跑
+- **本机编不了的**：三个 SwiftUI 文件（Windows 无 SwiftUI）→ 按铁律写最朴素的形式，
+ 由 CI 的「编译（模拟器 · 不签名）+ Swift 单测」兜底
+- 闸门：`tools/swift_typecheck.sh` ✓ 零 warning · `tools/chk_codingkeys.py` ✓
+
+### 20.5 本轮的教训
+
+**改 CSS/类名 = 改名，必须同时改所有使用点。** 做原型时改按钮 CSS 类名却漏了 HTML 里的用点 →
+按钮变成**白字压白底、直接消失**（用户当场发现）。事后补了一套机械核查
+（每个按钮是否都有背景来源、每个 class 是否都有规则、标签是否配平）并固定下来。
+**纯靠肉眼看代码发现不了这类问题 —— 它在语法上完全合法。**
+
+---
+
 *本方案为最终实现契约。**里程碑**：CI 三道闸门全绿（C 单测 / 模拟器编译 / Swift 单测）→ 出未签名 IPA → Windows 用 Sideloadly 真机侧载 → **与真表完成 HLS-GMAC 关联 + 抄表（`信息加密 = NONE`）** ✓*
-*下一步按 §1 推进：P2（GUAK/GUEK 对真表验证密钥映射 · IC 同步 · Association View 列表 · 明文 PDU trace），并核销 §12 中 R20–R25。*
+*下一步按 §1 推进：P2（GUAK/GUEK 对真表验证密钥映射 · IC 同步 · Association View 列表 · 明文 PDU trace），并核销 §12 中 R20–R25、R36。*
