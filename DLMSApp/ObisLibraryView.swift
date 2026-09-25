@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ObisLibraryView: View {
@@ -15,14 +16,25 @@ struct ObisLibraryView: View {
     @State private var alertTitle = ""
     @State private var alertText = ""
     @State private var showAlert = false
+    /// 搜索词（名称或 OBIS 代码）
+    @State private var query = ""
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(store.obisLibrary) { item in
-                    HStack {
+                if filtered.isEmpty {
+                    Text(store.obisLibrary.isEmpty
+                         ? "（清单为空：点右上角 ＋ 新增，或用 ✦ 从常用项里挑一条）"
+                         : "没有匹配的条目")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                ForEach(filtered) { item in
+                    HStack(spacing: 6) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(item.displayName).font(.body)
+                            // 行 1 只放**名称**。
+                            // 原来用的是 `displayName`（= "名称 · code"），而下一行又是 code
+                            // → code 被显示两遍、白占一行（见 docs/UI评审-核对报告.md §3.1）。
+                            Text(item.name.isEmpty ? item.code : item.name).font(.body)
                             Text(item.unit.isEmpty ? item.code : "\(item.code) · \(item.unit)")
                                 .font(.caption).monospaced().foregroundStyle(.secondary)
                             // 配了请求数据的条目直接标出来（Set/Action 时会被自动填入）
@@ -31,19 +43,41 @@ struct ObisLibraryView: View {
                                     .font(.caption2).monospaced().foregroundStyle(.tertiary)
                             }
                         }
-                        Spacer()
+                        Spacer(minLength: 4)
+                        // 复制一条（现场常要把 code 贴到别处）。
+                        // 注：**滑动删除本来就有**（下面的 .onDelete），不必再加。
+                        Button { copy(item) } label: { Image(systemName: "doc.on.doc") }
                         Button { editing = item; showEditor = true } label: { Image(systemName: "pencil") }
                     }
+                    // 放大点击目标（原来贴得较紧，单手现场操作不好点）
+                    .padding(.vertical, 7)
                 }
                 .onDelete(perform: delete)
             }
             .navigationTitle("OBIS 清单")
+            .searchable(text: $query, prompt: "搜索名称或 OBIS 代码")
             .toolbar { toolbarItems }
             .sheet(isPresented: $showEditor) { ObisEditorSheet(item: $editing).environmentObject(store) }
             .sheet(isPresented: $showPresets) { presetSheet }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .commaSeparatedText, .plainText]) { result in handleImport(result) }
             .alert(alertTitle, isPresented: $showAlert) { Button("好", role: .cancel) {} } message: { Text(alertText) }
         }
+    }
+
+    /// 搜索过滤：名称不区分大小写包含；OBIS 代码按**归一形态**匹配
+    ///（否则 `1-0:1.8.0*255` 这种写法搜不出来 —— 见 `ObisUtil.comparisonKey`）。
+    private var filtered: [ObisItem] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return store.obisLibrary }
+        let key = ObisUtil.comparisonKey(q)
+        return store.obisLibrary.filter { item in
+            if item.name.localizedCaseInsensitiveContains(q) { return true }
+            return ObisUtil.comparisonKey(item.code).contains(key)
+        }
+    }
+
+    private func copy(_ item: ObisItem) {
+        UIPasteboard.general.string = "\(item.code) \(item.name)"
     }
 
     private var toolbarItems: some ToolbarContent {
@@ -71,8 +105,14 @@ struct ObisLibraryView: View {
         }
     }
 
+    /// ⚠️ 必须按**过滤后**的列表取索引 —— `offsets` 是过滤后列表的下标，
+    /// 搜索状态下直接用 `store.obisLibrary[i]` 会删错条目。
     private func delete(at offsets: IndexSet) {
-        for i in offsets { store.remove(obisID: store.obisLibrary[i].id) }
+        let list = filtered
+        for i in offsets {
+            guard i >= 0 && i < list.count else { continue }
+            store.remove(obisID: list[i].id)
+        }
     }
 
     private func handleImport(_ result: Result<URL, Error>) {
@@ -104,24 +144,51 @@ struct ObisEditorSheet: View {
     @State private var name = ""
     @State private var unit = ""
     @State private var scaling = ""
-    @State private var icText = "1"
+    /// ⚠️ **空着开始**，不预填 "1"。
+    /// 原来预填 "1" 且保存时静默采纳 → 新增 `0.0.42.x`（应为 42 类）会被存成 1 类、
+    /// 之后读到的就是别的对象（见 docs/UI评审-核对报告.md §3.2）。
+    /// 「属性」保留预填 2：它是最通用的"读值"属性，且现在有常驻标签、看得见。
+    @State private var icText = ""
     @State private var attr = "2"
     @State private var data = ""
     @State private var showError = false
+    @State private var errorMsg = ""
 
     var body: some View {
         NavigationStack {
             Form {
+                // 每个字段都给**常驻标签**。
+                // 原来这 6 个框只靠 placeholder 当标签，而默认值（"1" / "0.0.1.0.0.255" / "2"）
+                // 一填就把 placeholder 顶掉了 → 新增时满屏是「1」「0.0.1.0.0.255」「2」三个裸行，
+                // 完全看不出哪个是接口类（真机截图 IMG_9249 就是这个样子）。
                 Section("基本信息") {
-                    TextField("名称", text: $name)
-                    // 键盘统一用系统默认：接口类与属性都可能填 16 进制，
-                    // 限定纯数字键盘反而让用户打不出来。
-                    TextField("接口类(IC，10/16进制，如 1 / 0x1F)", text: $icText)
-                    TextField("逻辑名 OBIS（如 1.0.1.8.0.255）", text: $code)
-                        .font(.system(.body, design: .monospaced))
-                    TextField("属性/方法", text: $attr)
-                    TextField("单位（可选）", text: $unit)
-                    TextField("量纲/倍率（可选）", text: $scaling)
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("名称")
+                        TextField("如 正向有功总电量", text: $name)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("接口类 IC")
+                        // 键盘统一用系统默认：接口类与属性都可能填 16 进制，
+                        // 限定纯数字键盘反而让用户打不出来。
+                        TextField("如 1（Data）/ 3（Register）/ 42（SAP Assignment）", text: $icText)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("逻辑名 OBIS")
+                        TextField("如 1.0.1.8.0.255", text: $code)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("属性 / 方法")
+                        TextField("如 2（读值）", text: $attr)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("单位（可选）")
+                        TextField("如 kWh", text: $unit)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        fieldLabel("量纲 / 倍率（可选）")
+                        TextField("如 -1", text: $scaling)
+                    }
                 }
                 Section {
                     TextField("如 11 01", text: $data)
@@ -142,10 +209,18 @@ struct ObisEditorSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
             }
             .alert("无法保存", isPresented: $showError) { Button("好", role: .cancel) {} } message: {
-                Text("OBIS 需为 6 段，如 1.0.1.8.0.255")
+                Text(errorMsg)
             }
         }
         .onAppear(perform: load)
+    }
+
+    /// 输入框的**常驻标签**（与主界面同一套样式）。
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
     }
 
     private func load() {
@@ -156,7 +231,25 @@ struct ObisEditorSheet: View {
     }
 
     private func save() {
-        guard ObisUtil.parse(code) != nil else { showError = true; return }
+        guard ObisUtil.parse(code) != nil else {
+            errorMsg = "OBIS 需为 6 段，如 1.0.1.8.0.255"
+            showError = true
+            return
+        }
+        // ⚠️ 接口类**必须显式给出** —— 这里刻意不再有"解析失败就沿用旧值/默认 1"的路。
+        // 原来预填 "1" + 静默采纳，会让新增的 `0.0.42.x`（应为 42 类）被存成 1 类，
+        // 之后按这条去读就是**另一个对象**（见 docs/UI评审-核对报告.md §3.2）。
+        guard let ic = NumberInput.parse(icText) else {
+            errorMsg = "接口类需填数字（如 1 / 3 / 42，也可写 0x1F）。"
+                     + "留空不保存，避免被当成 1 类用。"
+            showError = true
+            return
+        }
+        guard let at = NumberInput.parse(attr) else {
+            errorMsg = "属性 / 方法需填数字（如 2）"
+            showError = true
+            return
+        }
         var it = item ?? ObisItem(code: code)
         it.code = code
         it.name = name.isEmpty ? code : name
@@ -166,10 +259,8 @@ struct ObisEditorSheet: View {
         // 免得在列表里显示成 "1101" 让人以为自己填错了。
         // 解析侧本来就容忍空格（`hlp_hexToBytes` 会跳过非 hex 字符）。
         it.data = data.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if let ic = NumberInput.parse(icText) { it.objectClass = ic }
-        // 属性用同一套 10/16 进制识别，与「类」保持一致。
-        // （键盘限制取消后用户可能填 0x10，若还用 Int() 会解析失败并静默回落到 2。）
-        it.attribute = NumberInput.parse(attr) ?? 2
+        it.objectClass = ic
+        it.attribute = at
         store.upsert(obis: it)
         dismiss()
     }

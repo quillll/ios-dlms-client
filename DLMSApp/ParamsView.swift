@@ -14,10 +14,8 @@ struct ParamsView: View {
             Form {
                 transportSection
                 addressSection
-                authSection
-                securitySection
+                safetySection
                 keysSection
-                toggleSection
             }
             .navigationTitle("连接参数")
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
@@ -103,21 +101,28 @@ struct ParamsView: View {
         }
     }
 
-    private var authSection: some View {
-        Section("认证（独立项）") {
+    /// 认证方式 + 信息加密：**两项独立配置、互不影响**，但放进同一个 Section 的相邻两行。
+    ///
+    /// 之前它们各占一个独立 Section（「认证（独立项）」/「信息加密（独立项）」），
+    /// 在真机截图里正好卡在屏幕分界附近、不便于对照。
+    /// 合并后仍用脚注强调「互不影响」，避免让人误以为二者耦合
+    ///（v1.6 的坑是**某个组合**在库里跑不通，与 UI 是否并排无关）。
+    private var safetySection: some View {
+        Section {
             Picker("认证方式", selection: $store.config.auth) {
                 ForEach(Auth.allCases) { a in
                     Text(a.isSupportedP1 ? a.title : "\(a.title) (暂不支持)").tag(a)
                 }
             }
-        }
-    }
-
-    private var securitySection: some View {
-        Section("信息加密（独立项）") {
             Picker("信息加密", selection: $store.config.security) {
                 ForEach(SecurityMode.allCases) { Text($0.title).tag($0) }
             }
+        } header: {
+            Text("安全")
+        } footer: {
+            Text("认证方式与信息加密是两项独立配置、互不影响："
+                 + "认证默认 HLS-GMAC，信息加密默认 NONE。"
+                 + "认证=HLS-GMAC 时客户端 SystemTitle 必须在 AARQ 前设置（R13），见下方密钥区。")
         }
     }
 
@@ -151,11 +156,10 @@ struct ParamsView: View {
         }
     }
 
-    private var toggleSection: some View {
-        Section {
-            Toggle("解析使能", isOn: $store.config.parseEnabled)
-        }
-    }
+    // 「解析使能」开关**已从本页移除**：它同时出现在这里和解析面板 header，
+    // 是同一个 `store.config.parseEnabled` 的两个入口。方案把它归给**解析面板**
+    //（见「DLMS调试台-方案.md」§8 的工具行设计），所以只保留面板那一处。
+    // 它仍然会被持久化记住（`ConnectionConfig.parseEnabled`），只是不再在这页改。
 
     /// 通信地址(服务器) 输入框：**保留原始输入**（宽度由字节数决定，不能用 UInt32 存）。
     /// 只做归一化（去空白/分隔符、转大写），非法字符原样留着让下面的提示标红。

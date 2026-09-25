@@ -27,6 +27,10 @@ struct MainView: View {
     @State private var fullScreenPanel: Panel?
     /// 「最近一条 OBIS」只在首次出现时恢复一次，避免每次回到本页覆盖用户手改的类/属性。
     @State private var didRestoreRecent = false
+    /// 上一次操作的结果摘要（`时间 · 名称 = 值`）；空串 = 还没跑过。
+    ///
+    /// 值由 `onFinish` **显式供给**，不从状态文本里拆 —— 「从状态文本拆值」是 v1.5 刻意去掉的脆弱做法。
+    @State private var lastResultLine = ""
 
     enum Panel: String, CaseIterable, Identifiable {
         case data = "解析"
@@ -91,38 +95,73 @@ struct MainView: View {
 
     // MARK: - 操作对象
     private var objectEditor: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
                 // 键盘统一用系统默认：类与属性都可能填 16 进制（如 0x1F），
                 // 限定纯数字键盘反而是限制。
-                TextField("类 (10/16进制, 如 1 / 0x1F)", text: $currentClassText)
-                    .textFieldStyle(.roundedBorder)
-                TextField("属性", text: $currentAttr)
-                    .frame(width: 64).textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                TextField("OBIS（支持 , . - : 与16进制段）", text: $currentObis)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                Menu {
-                    ForEach(store.recentObis, id: \.self) { code in
-                        Button(code) { selectObis(code: code) }
-                    }
-                    if !store.obisLibrary.isEmpty {
-                        Divider()
-                        ForEach(store.obisLibrary) { item in
-                            Button(item.displayName) { selectObis(code: item.code) }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "chevron.down.circle.fill")
+                //
+                // ⚠️ 标签必须**常驻**：原来只用 placeholder 当标签，一旦填了值 placeholder 就消失，
+                // 之后再也看不出这个框是「类」还是「属性」—— 而类填错的后果是读到别的对象。
+                VStack(alignment: .leading, spacing: 3) {
+                    fieldLabel("接口类")
+                    TextField("如 1 / 0x1F", text: $currentClassText)
+                        .textFieldStyle(.roundedBorder)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    fieldLabel("属性")
+                    TextField("2", text: $currentAttr)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 62)
                 }
             }
-            obisHint
-            TextField("请求数据 (HEX，e.g. 11 01)", text: $requestHex)
-                .textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
-            requestHexHint
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    fieldLabel("逻辑名 OBIS")
+                    Spacer(minLength: 4)
+                    obisStatusText
+                }
+                HStack(spacing: 8) {
+                    TextField("支持 , . - : 与16进制段", text: $currentObis)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    Menu {
+                        ForEach(store.recentObis, id: \.self) { code in
+                            Button(code) { selectObis(code: code) }
+                        }
+                        if !store.obisLibrary.isEmpty {
+                            Divider()
+                            ForEach(store.obisLibrary) { item in
+                                Button(item.displayName) { selectObis(code: item.code) }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down.circle.fill")
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    fieldLabel("请求数据")
+                    Spacer(minLength: 4)
+                    requestStatusText
+                }
+                // 「选 OBIS 会自动填入」这条细则放在 placeholder 里：
+                // placeholder 只在字段为空时可见 —— 而那正是这条信息唯一有用的时刻。
+                TextField("HEX，如 11 01（选 OBIS 自动填入）", text: $requestHex)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+            }
         }
+    }
+
+    /// 输入框的**常驻标签**：填了值也不会消失（对比 placeholder）。
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.secondary)
     }
 
     /// 选中一个 OBIS：**同时**把「接口类」「属性」「请求数据」一起带过去。
@@ -147,29 +186,36 @@ struct MainView: View {
     //
     // 原来只有点了按钮才知道输入能不能用（靠日志里蹦一句"OBIS 无效"）。
     // 这里提前给反馈，样式沿用密钥字段那套「图标 + 字节数」。
+    //
+    // ⚠️ **不再单独占一行** —— 挪到各自字段的标签行右侧。
+    // 原来两处提示各占一行（「请求数据」那条甚至占两行），而"识别成功"本就是常态，
+    // 让常态占着垂直空间很不划算；而标签行左侧文字很短、右边本来就空着。
+    // 详见 docs/UI评审-核对报告.md §3、docs/UI改进原型.html 标签 ⑦。
 
-    private var obisHint: some View {
+    /// OBIS 合法性（显示在「逻辑名 OBIS」标签行右侧）。
+    private var obisStatusText: some View {
         let parsed = ObisUtil.parse(currentObis)
-        return HStack(spacing: 4) {
+        return HStack(spacing: 3) {
             Image(systemName: parsed != nil ? "checkmark.circle" : "exclamationmark.triangle.fill")
             Text(parsed != nil
                  ? "6 段已识别"
-                 : (currentObis.isEmpty ? "如 1.0.1.8.0.255" : "OBIS 需 6 段、每段 0-255"))
-            Spacer(minLength: 0)
+                 : (currentObis.isEmpty ? "如 1.0.1.8.0.255" : "需 6 段、每段 0-255"))
         }
         .font(.caption2)
         .foregroundStyle(parsed != nil ? Color.secondary : Color.orange)
     }
 
-    private var requestHexHint: some View {
+    /// 请求数据合法性（显示在「请求数据」标签行右侧）。
+    ///
+    /// 细则「选 OBIS 时会按清单自动填入」已移入该字段的 placeholder —— 那里才是它有用的时刻。
+    private var requestStatusText: some View {
         let digits = HexUtil.normalize(requestHex).count
         let ok = requestHex.isEmpty || HexUtil.bytes(fromHex: requestHex) != nil
-        return HStack(spacing: 4) {
+        return HStack(spacing: 3) {
             Image(systemName: ok ? "checkmark.circle" : "exclamationmark.triangle.fill")
             Text(requestHex.isEmpty
-                 ? "写/执行用的 HEX（如 11 01）；留空 = 无参数。选 OBIS 时会按清单自动填入"
-                 : (ok ? "\(digits / 2) 字节" : "HEX 需偶数位且仅含 0-9 A-F"))
-            Spacer(minLength: 0)
+                 ? "留空 = 无参数"
+                 : (ok ? "\(digits / 2) 字节" : "需偶数位、仅 0-9 A-F"))
         }
         .font(.caption2)
         .foregroundStyle(ok ? Color.secondary : Color.orange)
@@ -178,9 +224,16 @@ struct MainView: View {
     // MARK: - 读 / 写 / 执行
     private var actionButtons: some View {
         HStack(spacing: 10) {
+            // 保留原方案的「一个动作一个颜色」三色编码（读=紫 / 写=蓝）——
+            // 这个编码本身是成立的（自用工具天天用，颜色就是靠记忆分的）。
+            // 真正坏的只有「执行」：原来是 `Color.secondary.opacity(0.35)`，
+            // **白字压 35% 灰、对比度极低 —— 它其实可点，但看起来像禁用**
+            //（外部评审报告正是被这一点误导，见 docs/UI评审-核对报告.md 的 B2）。
+            // 现在换成橙色：既清晰可读，又顺带提示这个动作会改表。
+            // 方案对比见 docs/UI改进原型.html 标签 ⑥ 第一组（方案 F）。
             button("读", .purple, .read)
             button("写", .blue, .write)
-            button("执行", Color.secondary.opacity(0.35), .method)
+            button("执行", .orange, .method)
         }
         .disabled(session.isBusy)
     }
@@ -193,12 +246,30 @@ struct MainView: View {
     }
 
     // MARK: - 状态
+    //
+    // v1.9：补上「时间 · 名称 = 值」。
+    // 原来只有一个圆点 + 「完成」两个字 —— 读完电量后第一反应是"值是多少"，
+    // 却必须自己滚到解析面板去找最后一条。
     private var statusBar: some View {
-        HStack {
+        HStack(spacing: 6) {
             Circle().fill(session.isBusy ? .orange : .green).frame(width: 9, height: 9)
             Text(session.state).font(.footnote).foregroundStyle(.secondary)
-            Spacer()
+            if !lastResultLine.isEmpty {
+                Text("· " + lastResultLine)
+                    .font(.footnote).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
         }
+    }
+
+    /// 拼「HH:mm:ss.SSS · 名称 = 值」。
+    /// 值取不到（块格式异常）就只显示时间与名称，不硬凑。
+    private static func makeResultLine(obisName: String, block: String) -> String {
+        var line = Date().dlmsLogText
+        if !obisName.isEmpty { line += " · " + obisName }
+        if let v = ParseBlock.valuePart(of: block) { line += " = " + v }
+        return line
     }
 
     // MARK: - 解析 / 报文
@@ -264,7 +335,7 @@ struct MainView: View {
                 } clear: {
                     store.clearParsed()
                 }
-                parseList(height: 260)
+                parseList(height: 340)
             } else {
                 panelHeader(clearEnabled: !store.logs.isEmpty) {
                     HStack(spacing: 8) {
@@ -334,7 +405,13 @@ struct MainView: View {
         return total > 200 ? "共 \(total) 条 · 显示最近 200" : "共 \(total) 条"
     }
 
-    private var logList: some View { logList(height: 260) }
+    /// 内嵌高度 260 → 340。
+    ///
+    /// ⚠️ 这一条**有取舍**：主界面是 ScrollView，内容本就略溢出；
+    /// 加高只是把"被屏幕裁掉的部分"变多，视觉上差别不大（见原型标签 ⑥ 的说明）。
+    /// 好消息是「输入提示上移」省下了约 56pt，正好抵掉大部分新增高度。
+    /// 若实机觉得滚太多，把 340 改回 260 即可（就这一处 + parseList 那处）。
+    private var logList: some View { logList(height: 340) }
 
     /// `height = nil` 时不加高度约束（满屏用）。
     /// ⚠️ 内嵌时写死 260pt；满屏时必须放开，否则"满屏"里只有 260pt 高、下面大片空白
@@ -382,8 +459,16 @@ struct MainView: View {
                     // 报文行：TX/RX 与报文类型各占固定列，HEX 放下一行独占整宽。
                     Text(e.text).font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
-                    Text(e.label).font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary).frame(width: 92, alignment: .leading)
+                    // 类型列是**启发式**识别、可能误标（R20），所以标一个 ⓘ；
+                    // 长按本行有说明。列宽 92 → 104 是给角标腾位
+                    //（HEX 已独占下一行，首行本来就有富余，见上面的注释）。
+                    HStack(spacing: 3) {
+                        Text(e.label).font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary).lineLimit(1)
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    }
+                    .frame(width: 104, alignment: .leading)
                     Spacer(minLength: 0)
                 } else {
                     // 信息行：`text` 本身就是整句消息（如"建链失败: Data receive failed."），
@@ -400,6 +485,12 @@ struct MainView: View {
                     .foregroundStyle(color(for: e.kind))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        // 长按看类型列为什么"不可信"（只对报文行给出，信息行没这个列）
+        .contextMenu {
+            Text("「类型」列是启发式识别的 —— 扫前 16 字节里首个命中的 tag，"
+                 + "HDLC 帧的 HCS 字节可能先于真正的 APDU tag 命中，会标错。"
+                 + "看日志请以 HEX 为准（R20）。")
         }
     }
 
@@ -423,11 +514,17 @@ struct MainView: View {
         }
         session.isBusy = true
         session.state = "连接中…"
+        // 清掉上一次的结果摘要：否则本次若失败，状态栏会挂着上一轮的旧值（误导）
+        lastResultLine = ""
         let opName = op.map { $0 == .read ? "读" : ($0 == .write ? "写" : "执行") } ?? "连接测试"
         store.log(.info, opName)
         // 存**归一形态**：否则同一对象按不同写法会进"最近"列表两条，
         // 且回查清单时匹配不上（见 selectObis）。
         if op != nil { store.rememberObis(ObisUtil.comparisonKey(currentObis)) }
+
+        // 状态栏回显要用 OBIS 的中文名（清单里查得到才有；手输未入库的就只显示时间与值）
+        let obisNameKey = ObisUtil.comparisonKey(currentObis)
+        let obisName = store.obisLibrary.first { ObisUtil.comparisonKey($0.code) == obisNameKey }?.name ?? ""
 
         let cfg = store.config
         let reader = GXDLMSReader(
@@ -445,6 +542,8 @@ struct MainView: View {
                     store.appendParsed(value)
                     // 连上了才记入"最近连接"（参数页下拉用）；失败的地址不进列表。
                     store.config.rememberEndpoint()
+                    // 状态栏回显：值由这里**显式供给**（取纯值见 ParseBlock）
+                    lastResultLine = MainView.makeResultLine(obisName: obisName, block: value)
                 }
                 // 注意：第一个参数是 LogEntry.Kind（只有 info/tx/rx）；
                 // 错误级别走 level: —— `error` 是 LogEntry.Level 的成员，别传错位置。
