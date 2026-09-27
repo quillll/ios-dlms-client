@@ -528,8 +528,14 @@ private extension KeyedDecodingContainer {
 
 enum HexUtil {
     /// "11 01" / "11 01 00" / "AB0F" → [0x11, 0x01, ...]；非法返回 nil。
+    ///
+    /// ⚠️ 必须与 `isValid` 走**同一条归一**（`normalize`）。
+    /// 原来这里只 `filter { !$0.isWhitespace }`，而 `isValid` 走 `normalize`（还去 `:` 与 `-`）
+    /// → 同一份输入两处结论相反：`11:01` / `11-01` / `AB:CD` 在这里是 `nil`
+    ///（主界面「请求数据」框标红拒绝），在 `isValid` 里却是 `true`（参数页密钥框放行）。
+    /// 同一个 App 内自相矛盾 —— 现在两处都接受空白 / `:` / `-` 作为分隔。
     static func bytes(fromHex string: String) -> [UInt8]? {
-        let s = string.lowercased().filter { !$0.isWhitespace }
+        let s = normalize(string).lowercased()
         guard !s.isEmpty, s.count % 2 == 0 else { return nil }
         var out = [UInt8](); out.reserveCapacity(s.count / 2)
         var it = s.makeIterator()
@@ -580,12 +586,22 @@ enum ObisUtil {
     /// 用于「最近 OBIS」与清单条目的匹配 —— 两边写法可能不同
     /// （`1-0:1.8.0*255` vs `1.0.1.8.0.255`），不归一就查不到，
     /// 导致选中后类/属性/请求数据都带不过来，下拉里还会出现同一个对象的两个变体。
+    /// OBIS 写法里允许的**分隔符**（统一成 `.`）。
+    ///
+    /// ⚠️ 比较与导入**必须共用这一份**：历史上 `comparisonKey` 含 `,`
+    /// 而 `ObisImporter.normalize` 自己另列了一份（`- : *`，漏了 `,`）→
+    /// **CSV 导入会拒掉主界面明明能用的写法**。抽成单一真源后不可能再漂移。
+    static let separators: [String] = ["-", ":", "*", ","]
+
+    /// 把分隔符统一成 `.`（**不改大小写、不去空白** —— 那些交给调用方）。
+    static func foldSeparators(_ code: String) -> String {
+        var s = code
+        for sep in separators { s = s.replacingOccurrences(of: sep, with: ".") }
+        return s
+    }
+
     static func comparisonKey(_ code: String) -> String {
-        code.filter { !$0.isWhitespace }.uppercased()
-            .replacingOccurrences(of: "-", with: ".")
-            .replacingOccurrences(of: ":", with: ".")
-            .replacingOccurrences(of: "*", with: ".")
-            .replacingOccurrences(of: ",", with: ".")
+        foldSeparators(code).filter { !$0.isWhitespace }.uppercased()
     }
 
     /// **对象身份键 = 类 + 逻辑名(归一) + 属性**。

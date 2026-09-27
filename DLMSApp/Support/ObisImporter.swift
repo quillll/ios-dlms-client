@@ -15,9 +15,16 @@ enum ObisImporter {
 
     static func importResult(from url: URL) throws -> [ObisItem] {
         // S2：先查大小再决定读不读。原来直接 `String(contentsOf:)` 全量读入，没有任何上限。
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        if size > maxImportBytes { throw ImporterError.tooLarge(size) }
+        //
+        // ⚠️ 拿不到大小时**绝不能当 0** —— `?? 0` 是 fail-open：读不到就直接跳过整条上限。
+        //    改用 `?? -1` 标记"未知"，读完之后按**实际字节数**再兜一次。
+        //    （这样最坏情况退化成"读完才发现超限"，但仍会拒掉，不会静默放行。）
+        let knownSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+        if knownSize > maxImportBytes { throw ImporterError.tooLarge(knownSize) }
         let raw = try String(contentsOf: url, encoding: .utf8)
+        if knownSize < 0 && raw.utf8.count > maxImportBytes {
+            throw ImporterError.tooLarge(raw.utf8.count)
+        }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
             return try parseJSON(trimmed)
@@ -99,12 +106,14 @@ enum ObisImporter {
     }
 
     /// 统一成点分格式："1-0:1.8.0*255" -> "1.0.1.8.0.255"。
+    ///
+    /// 分隔符集合**复用** `ObisUtil.foldSeparators`（单一真源）。
+    /// 原来这里自己另列了 `- : *` 却**漏了 `,`**，而 `ObisUtil.comparisonKey` 含 `,`
+    /// → CSV 导入会拒掉主界面明明能用的写法（如 `1,0,1,8,0,255`）。
+    /// 这里额外把连续的点折叠掉（`1..0` → `1.0`），与 `comparisonKey` 的差别仅此一点。
     static func normalize(_ code: String) -> String {
-        var s = code
-        s = s.replacingOccurrences(of: "-", with: ".")
-        s = s.replacingOccurrences(of: ":", with: ".")
-        s = s.replacingOccurrences(of: "*", with: ".")
-        return s.split(separator: ".").map(String.init).joined(separator: ".")
+        let folded = ObisUtil.foldSeparators(code)
+        return folded.split(separator: ".").map(String.init).joined(separator: ".")
     }
 }
 

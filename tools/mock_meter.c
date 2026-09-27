@@ -88,8 +88,17 @@ static unsigned char AARE_NONE_PL[] = {
 /// `--no-auth`：AARQ 用不要求认证的 AARE 应答（配合 local_e2e --auth none）。
 static int gNoAuth = 0;
 
-// HLS 应答的确认：action-response，invoke-id=1，result=0(成功)（明文，与真表 NONE 场景一致）。
-static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0xC1, 0x00, 0x01, 0x00 };
+// Action-Response-Normal。布局同 GET/SET：`<tag> <type> <invoke-id> <result> …`
+//（`dlms_handleMethodResponse` 先读 type、再读 invokeId，`dlms.c` 内 `Get type.` 那段）。
+//
+// ⚠️ 旧值 `C7 01 C1 00 01 00` 同样是**按猜的**：invokeId=0xC1 ✗ 且多 2 字节。
+// 改成 `C7 01 01 00` 后，e2e 里那条 `dlms_method` 才真的在验"action-response 解析"。
+//
+// ⚠️ 但 HLS 建链那一步**仍然过不去**：`cl_parseApplicationAssociationResponse` 要求应答里带
+// 一段 17 字节的 OCTET STRING（服务端 SC+IC+GMAC）并**逐字节校验**，
+// 而本 mock 不链接 DLMS 库、算不出 GMAC → 这条路径在本地桩上**结构性验不了**
+//（真表已验过，见方案文档里程碑）。这里只把布局改对，不再让"格式错"掩盖"算不出 GMAC"。
+static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0x01, 0x00 };
 // Get-Response：invoke-id=1、result=0(data)，data = octet-string(1 字节 0x2A)。
 // Get-Response-Normal。布局同 SET：`<tag> <type> <invoke-id> <result> <data…>`
 //（`dlms_handleGetResponse` 先读 type、再读 invokeId，`dlms.c:3929/3938`）。
@@ -111,7 +120,10 @@ static unsigned char SET_OK_PL[] = { 0xC5, 0x01, 0x01, 0x00 };
 // Release-Response。依据 enums.h:1228/1233：RELEASE_REQUEST=0x62 / RELEASE_RESPONSE=0x63。
 // 注意方向：0x62 才是**请求**、0x63 是**响应** —— 客户端不会把 0x63 当请求发出来，
 // 所以下面不为 0x63 配规则（早期版本写成 0x63→0x64，两个都不是 release 语义，是错的）。
-static unsigned char REL_OK_PL[] = { 0x63, 0x01, 0x00 };
+// 内容：`<tag 63> <result 00=accepted>`（Release-Response 没有 invoke-id 字段）。
+// 注：客户端侧 `dlms.c:5260` 对 RELEASE_RESPONSE 直接 `break`（**完全不解析内容**），
+// 所以这里改成标准形态只是保真，不影响行为。
+static unsigned char REL_OK_PL[] = { 0x63, 0x00 };
 
 static int contains(const unsigned char* hay, int n, const unsigned char* needle, int m)
 {

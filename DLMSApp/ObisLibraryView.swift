@@ -1,6 +1,6 @@
 //
 //  ObisLibraryView.swift
-//  全局 OBIS 清单：新增/编辑、JSON/CSV 导入、常用预置（按 code 覆盖去重）。
+//  全局 OBIS 清单：新增/编辑、JSON/CSV 导入、常用预置（按「类+逻辑名+属性」覆盖去重）。
 //
 
 import SwiftUI
@@ -151,7 +151,7 @@ struct ObisLibraryView: View {
             do {
                 let items = try ObisImporter.importResult(from: url)
                 store.importObis(items)
-                alertTitle = "导入完成"; alertText = "导入 \(items.count) 条（按 code 覆盖去重）"
+                alertTitle = "导入完成"; alertText = "导入 \(items.count) 条（同样的类+逻辑名+属性会被覆盖）"
             } catch {
                 alertTitle = "导入失败"; alertText = error.localizedDescription
             }

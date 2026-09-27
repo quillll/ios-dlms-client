@@ -425,6 +425,128 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// `NumberInput.parse`：被 3 处调用（主界面类/属性、OBIS 编辑器、导入器），此前**零测试**。
+/// 用例全部来自本机实测（不是按 `Int(_:radix:)` 的文档推的 —— 推理错过一次）。
+final class NumberInputTests: XCTestCase {
+
+    func testDecimal() {
+        XCTAssertEqual(NumberInput.parse("1"), 1)
+        XCTAssertEqual(NumberInput.parse("115"), 115)
+        XCTAssertEqual(NumberInput.parse("300"), 300)
+        XCTAssertEqual(NumberInput.parse("0"), 0)
+    }
+
+    /// 含 a-f 或 `0x` 前缀 → 按十六进制。
+    func testHex() {
+        XCTAssertEqual(NumberInput.parse("1F"), 31)
+        XCTAssertEqual(NumberInput.parse("0x1F"), 31)
+        XCTAssertEqual(NumberInput.parse("0X1F"), 31)
+        XCTAssertEqual(NumberInput.parse("1a"), 26)
+        XCTAssertEqual(NumberInput.parse("abc"), 2748)
+    }
+
+    /// ⚠️ 坑：`1e3` 里的 `e` 命中 a-f → 按 hex 解析成 0x1E3 = 483，
+    /// 而用户多半想表达科学计数法 1000。钉住这个容易误解的行为。
+    func testLooksLikeScientificButIsHex() {
+        XCTAssertEqual(NumberInput.parse("1e3"), 483)
+    }
+
+    func testNegativeIsParsedSuccessfully() {
+        // 负数**解析成功**、不触发兜底 —— 兜底发生在更后面的 `UInt16(clamping:)`（会变成 0）
+        XCTAssertEqual(NumberInput.parse("-5"), -5)
+    }
+
+    /// 这些才返回 nil（调用方据此走兜底）。
+    func testNilCases() {
+        XCTAssertNil(NumberInput.parse(""))
+        XCTAssertNil(NumberInput.parse("   "))
+        XCTAssertNil(NumberInput.parse("1.5"))
+        XCTAssertNil(NumberInput.parse("1,5"))
+        XCTAssertNil(NumberInput.parse("1 2"))
+        XCTAssertNil(NumberInput.parse("#1"))
+        XCTAssertNil(NumberInput.parse("xyz"))
+        XCTAssertNil(NumberInput.parse("0x"))            // 去掉前缀后为空
+        XCTAssertNil(NumberInput.parse("0xZZ"))
+        XCTAssertNil(NumberInput.parse("１２３"))          // 全角
+        XCTAssertNil(NumberInput.parse("99999999999999999999"))  // 超 Int 范围
+    }
+
+    func testWhitespaceIsTrimmed() {
+        XCTAssertEqual(NumberInput.parse("  0x1F  "), 31)
+    }
+}
+
+/// 两个 hex 入口**必须同结论**。
+///
+/// 历史坑：`bytes(fromHex:)` 只去空白，`isValid` 走 `normalize`（还去 `:` `-`）→
+/// `11:01` / `11-01` / `AB:CD` 在前者 nil、后者 true。同一个 App 内自相矛盾
+/// （主界面请求数据框标红拒绝，参数页密钥框放行）。现已统一走 `normalize`。
+final class HexUtilConsistencyTests: XCTestCase {
+
+    /// 带分隔符的写法，**两个入口都必须接受**（原 bug：`bytes` 拒绝 `11:01` 而 `isValid` 放行）。
+    func testSeparatorsAreAcceptedByBoth() {
+        XCTAssertEqual(HexUtil.bytes(fromHex: "11:01"), [0x11, 0x01])
+        XCTAssertEqual(HexUtil.bytes(fromHex: "11-01"), [0x11, 0x01])
+        XCTAssertEqual(HexUtil.bytes(fromHex: "AB:CD"), [0xAB, 0xCD])
+        XCTAssertEqual(HexUtil.bytes(fromHex: "11 01"), [0x11, 0x01])
+        XCTAssertTrue(HexUtil.isValid("11:01", byteCount: 2))
+        XCTAssertTrue(HexUtil.isValid("11-01", byteCount: 2))
+        XCTAssertTrue(HexUtil.isValid("AB:CD", byteCount: 2))
+    }
+
+    /// 反向蕴含：`isValid` 说合法 ⇒ `bytes` 必须也能解析出来。
+    ///
+    /// ⚠️ 反向**不成立且不应成立**：`bytes` 不管长度（`11:01:02:03` 能解析成 4 字节），
+    /// 而 `isValid(byteCount:)` 校验**指定字节数** → 拿同一份输入要求两者"结论一致"是错的。
+    /// 真正的不变式只有"字符集/分隔符口径一致"这一条。
+    func testIsValidImpliesBytes() {
+        let samples = ["11:01", "11-01", "AB:CD", "11 01", "AB0F", "11:01:02:03"]
+        for s in samples {
+            let n = HexUtil.normalize(s).count / 2
+            if HexUtil.isValid(s, byteCount: n) {
+                XCTAssertNotNil(HexUtil.bytes(fromHex: s), "isValid 通过但 bytes 解析失败：\(s)")
+            }
+        }
+    }
+
+    func testInvalidStillNil() {
+        XCTAssertNil(HexUtil.bytes(fromHex: "ZZ"))
+        XCTAssertNil(HexUtil.bytes(fromHex: "1"))       // 奇数位
+        XCTAssertNil(HexUtil.bytes(fromHex: ""))
+        XCTAssertNil(HexUtil.bytes(fromHex: "0x"))      // `x` 不是合法 hex 字符
+        XCTAssertFalse(HexUtil.isValid("ZZ", byteCount: 2))
+    }
+}
+
+/// OBIS 分隔符集合必须是**单一真源**。
+///
+/// 历史坑：`ObisUtil.comparisonKey` 含 `,`，而 `ObisImporter.normalize` 自己另列了一份
+/// （`- : *`，漏了 `,`）→ **CSV 导入会拒掉主界面明明能用的写法**。
+final class ObisSeparatorTests: XCTestCase {
+
+    func testImportSideAcceptsSameSeparatorsAsComparison() {
+        let samples = ["1,0,1,8,0,255", "1-0:1.8.0*255", "1.0.1.8.0.255"]
+        for s in samples {
+            let v: String = ObisImporter.normalize(s)
+            XCTAssertEqual(v, "1.0.1.8.0.255", "导入侧不接受「\(s)」")
+            XCTAssertEqual(ObisUtil.comparisonKey(s), "1.0.1.8.0.255")
+        }
+    }
+
+    /// 导入侧的额外行为：折叠连续的点（`comparisonKey` 不折叠）。
+    func testImportSideCollapsesConsecutiveDots() {
+        let v: String = ObisImporter.normalize("1..0.1")
+        XCTAssertEqual(v, "1.0.1")
+    }
+
+    /// `foldSeparators` 只换分隔符 —— 大小写与空白**刻意不动**（两边口径不同：
+    /// `comparisonKey` 要去空白并大写，导入侧两者都不做）。
+    func testFoldSeparatorsDoesNotTouchCaseOrWhitespace() {
+        let v: String = ObisUtil.foldSeparators(" 1-0:a.8 ")
+        XCTAssertEqual(v, " 1.0.a.8 ")
+    }
+}
+
 /// 按量纲缩放 + 附单位（状态栏展示用；解析面板仍显示原始值）。
 final class ValueScaleTests: XCTestCase {
 
