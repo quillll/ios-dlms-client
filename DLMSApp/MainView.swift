@@ -390,7 +390,9 @@ struct MainView: View {
                 .pickerStyle(.segmented)
 
             if panel == .data {
-                panelHeader(clearEnabled: !store.parseEntries.isEmpty) {
+                panelHeader(clearEnabled: !store.parseEntries.isEmpty,
+                             copyEnabled: !store.parseEntries.isEmpty,
+                             copyAll: { copyAllParsed() }) {
                     HStack(spacing: 6) {
                         Toggle("解析", isOn: $store.config.parseEnabled).labelsHidden()
                         Text("解析使能").font(.caption2).foregroundStyle(.tertiary)
@@ -404,7 +406,9 @@ struct MainView: View {
                 }
                 parseList(height: 340)
             } else {
-                panelHeader(clearEnabled: !store.logs.isEmpty) {
+                panelHeader(clearEnabled: !store.logs.isEmpty,
+                             copyEnabled: !store.logs.isEmpty,
+                             copyAll: { copyAllLogs() }) {
                     HStack(spacing: 8) {
                         Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
                         // 类型列是**启发式**识别、可能误标（R20）——说明放这里，
@@ -450,13 +454,21 @@ struct MainView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { fullScreenPanel = nil }
                 }
+                // 满屏是"真正要看/要拿走"的地方，所以「复制全部」在这里也要有。
+                // 两个按钮放进同一个 ToolbarItem —— 避免两个同 placement 的项在窄屏上被折叠进溢出菜单。
                 ToolbarItem(placement: .primaryAction) {
-                    if p == .data {
-                        Button { store.clearParsed() } label: { Label("清空", systemImage: "trash") }
-                            .disabled(store.parseEntries.isEmpty)
-                    } else {
-                        Button { store.clearLogs() } label: { Label("清空", systemImage: "trash") }
-                            .disabled(store.logs.isEmpty)
+                    HStack(spacing: 12) {
+                        if p == .data {
+                            Button { copyAllParsed() } label: { Label("复制", systemImage: "doc.on.doc") }
+                                .disabled(store.parseEntries.isEmpty)
+                            Button { store.clearParsed() } label: { Label("清空", systemImage: "trash") }
+                                .disabled(store.parseEntries.isEmpty)
+                        } else {
+                            Button { copyAllLogs() } label: { Label("复制", systemImage: "doc.on.doc") }
+                                .disabled(store.logs.isEmpty)
+                            Button { store.clearLogs() } label: { Label("清空", systemImage: "trash") }
+                                .disabled(store.logs.isEmpty)
+                        }
                     }
                 }
             }
@@ -466,11 +478,21 @@ struct MainView: View {
     /// 两个面板共用的标题行：左边是本面板的开关/状态，右边**固定**是「清空」。
     /// 做成同一套布局，是为了切面板时视线不用重新找按钮 —— 之前报文面板压根没有清空入口。
     private func panelHeader<Leading: View>(clearEnabled: Bool = true,
+                                            copyEnabled: Bool = false,
+                                            copyAll: (() -> Void)? = nil,
                                             @ViewBuilder leading: () -> Leading,
                                             clear: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
             leading()
             Spacer(minLength: 8)
+            // 「复制」放在最显眼的位置：**导出全部**是主要用途
+            //（一次操作几十条 TX/RX，单条复制不够用）；单条仍可从长按菜单取。
+            if let copyAll {
+                Button(action: copyAll) {
+                    Label("复制", systemImage: "doc.on.doc").font(.caption2)
+                }
+                .disabled(!copyEnabled)
+            }
             Button(action: clear) {
                 Label("清空", systemImage: "trash").font(.caption2)
             }
@@ -584,6 +606,40 @@ struct MainView: View {
                 Label("复制整行", systemImage: "doc.on.doc")
             }
         }
+    }
+
+    /// **复制全部报文**（主要用途）。
+    ///
+    /// 连信息行一起导出 —— 那些是「建链失败」「OBIS 无效」之类的关键上下文，
+    /// 只留 TX/RX 反而看不懂。
+    private func copyAllLogs() {
+        let text: String = MainView.logsText(store.logs)
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        // 反馈：不清不响的按钮等于没做（本项目已栽过一次）。这里走日志 ——
+        // 它就是这个 App 的反馈通道，且用户正好在看着这块。
+        store.log(.info, "已复制 \(store.logs.count) 条报文到剪贴板")
+    }
+
+    /// **复制全部解析结果**（每条本身是两行块，用空行隔开）。
+    private func copyAllParsed() {
+        let text: String = MainView.parsedText(store.parseEntries)
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        store.log(.info, "已复制 \(store.parseEntries.count) 条解析结果到剪贴板")
+    }
+
+    /// 全部报文 → 文本，每行一条，便于贴进文档/聊天。
+    private static func logsText(_ logs: [LogEntry]) -> String {
+        var lines: [String] = []
+        lines.reserveCapacity(logs.count)
+        for e in logs { lines.append(copyText(for: e)) }
+        return lines.joined(separator: "\n")
+    }
+
+    /// 全部解析结果 → 文本（每条自带换行块，用空行分隔更易读）。
+    private static func parsedText(_ items: [String]) -> String {
+        return items.joined(separator: "\n\n")
     }
 
     /// 「复制整行」的内容：`时间 方向 类型 HEX`（信息行没有类型/HEX 就省略）。
