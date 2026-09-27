@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 final class SessionModel: ObservableObject {
     @Published var isBusy = false
@@ -31,6 +32,8 @@ struct MainView: View {
     ///
     /// 值由 `onFinish` **显式供给**，不从状态文本里拆 —— 「从状态文本拆值」是 v1.5 刻意去掉的脆弱做法。
     @State private var lastResultLine = ""
+    /// 报文「类型」列说明弹层（点面板标题栏的 ⓘ 打开）。
+    @State private var showTypeNote = false
 
     enum Panel: String, CaseIterable, Identifiable {
         case data = "解析"
@@ -404,6 +407,11 @@ struct MainView: View {
                 panelHeader(clearEnabled: !store.logs.isEmpty) {
                     HStack(spacing: 8) {
                         Text(logStatusText).font(.caption2).foregroundStyle(.tertiary)
+                        // 类型列是**启发式**识别、可能误标（R20）——说明放这里，
+                        // 想看时点一次即可；原先挂在每行长按上，把"长按=复制"占掉了。
+                        Button { showTypeNote = true } label: {
+                            Image(systemName: "info.circle").font(.caption2)
+                        }
                         Button { fullScreenPanel = .log } label: {
                             Label("满屏", systemImage: "arrow.up.left.and.arrow.down.right")
                                 .font(.caption2)
@@ -417,6 +425,15 @@ struct MainView: View {
         }
         // 解析/报文都嵌在外层 ScrollView 里，高度被压住、也拉不开 —— 给它们一个整屏入口
         .fullScreenCover(item: $fullScreenPanel) { p in fullScreenView(p) }
+        // ⚠️ 同一视图上挂多个 `.alert` 时 SwiftUI 只认最后一个 —— MainView 目前只有这一个，
+        //    将来再加 alert 请合并到同一个弹出点上（用变量区分标题/文案）。
+        .alert("报文「类型」列", isPresented: $showTypeNote) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text("这一列是启发式识别的：扫前 16 字节里首个命中的 tag。"
+                 + "HDLC 帧的 HCS 字节可能先于真正的 APDU tag 命中，所以会标错。"
+                 + "\n\n看日志请以 HEX 为准（R20）。\n\n长按任意一行可复制报文。")
+        }
     }
 
     /// 解析/报文的满屏视图（复用同一套渲染与自动跟随；高度放开，见 logList 的说明）。
@@ -550,12 +567,31 @@ struct MainView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        // 长按看类型列为什么"不可信"（只对报文行给出，信息行没这个列）
+        // 长按 → **复制报文**。
+        //
+        // 这里原先放的是「类型列可能误标」的说明，结果**把长按占掉了** —— 而报文面板里
+        // 长按最该做的是复制报文（现场常要贴到别处/文档里）。说明已挪到面板标题栏的 ⓘ
+        //（想看时点一次，不必每行都弹一遍）。
         .contextMenu {
-            Text("「类型」列是启发式识别的 —— 扫前 16 字节里首个命中的 tag，"
-                 + "HDLC 帧的 HCS 字节可能先于真正的 APDU tag 命中，会标错。"
-                 + "看日志请以 HEX 为准（R20）。")
+            if let hex = e.hex, !hex.isEmpty {
+                Button { UIPasteboard.general.string = hex } label: {
+                    Label("复制 HEX", systemImage: "doc.on.doc")
+                }
+            }
+            Button {
+                UIPasteboard.general.string = MainView.copyText(for: e)
+            } label: {
+                Label("复制整行", systemImage: "doc.on.doc")
+            }
         }
+    }
+
+    /// 「复制整行」的内容：`时间 方向 类型 HEX`（信息行没有类型/HEX 就省略）。
+    private static func copyText(for e: LogEntry) -> String {
+        var s = e.time.dlmsLogText + " " + e.text
+        if !e.label.isEmpty { s += " " + e.label }
+        if let hex = e.hex, !hex.isEmpty { s += " " + hex }
+        return s
     }
 
     private func color(for kind: LogEntry.Kind) -> Color {
