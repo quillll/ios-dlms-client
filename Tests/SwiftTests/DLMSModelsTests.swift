@@ -425,6 +425,126 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// `Store` 里那批与 Combine 无关的判断（定位 / 去重 / 截断）。
+///
+/// 为什么抽出来测：`Store` 是 `ObservableObject`（`import Combine`），
+/// 而 **Combine 在 Windows 上不存在** → 本机编不了、只能等 CI（约 5 分钟一轮）。
+/// 抽成纯函数后本机几秒出结果，也让"两条写路径不能合并"这类规则有了**可执行的守卫**。
+final class ObisLibraryOpsTests: XCTestCase {
+
+    private func mk(_ code: String, _ name: String = "n", cls: Int = 3, attr: Int = 2) -> ObisItem {
+        var it = ObisItem(code: code, name: name, objectClass: cls)
+        it.attribute = attr
+        return it
+    }
+
+    // MARK: - locateForSave：只看 id
+
+    func testSaveLocatesSelfByID() {
+        let a = mk("1.0.1.8.0.255")
+        let i: Int? = ObisLibraryOps.locateForSave([a], id: a.id)
+        XCTAssertEqual(i, 0)
+    }
+
+    /// ⚠️ **核心守卫**：同 code 但**新 id**（复制出来的那条）**绝不能被判为"已存在"**——
+    /// 否则"复制"会变成"改掉原条目"。这就是 `save` **不能按 code 匹配**的原因。
+    func testSaveMustNotMatchByCode() {
+        var dup = mk("1.0.1.8.0.255")        // 同 code
+        dup.id = UUID()                      // 新 id —— 复制的本质
+        let i: Int? = ObisLibraryOps.locateForSave([mk("1.0.1.8.0.255")], id: dup.id)
+        XCTAssertNil(i, "同 code 的新条目被误判为已存在 → 复制会改掉原条目")
+    }
+
+    /// 编辑 A 时把 code 改成与 B 相同 → 必须**只更新 A**（按 id），不能命中 B。
+    /// （原实现用 `firstIndex(id || code)`，B 在数组里靠前时就会把 B 覆盖掉。）
+    func testSaveOnCodeCollisionStillTargetsSelf() {
+        let b = mk("0.0.96.1.0.255", "设备ID")          // B 在前
+        let a = mk("0.0.42.0.0.255", "逻辑设备名")
+        var edited = a
+        edited.code = "0.0.96.1.0.255"                  // 改成与 B 相同
+        let i: Int? = ObisLibraryOps.locateForSave([b, a], id: edited.id)
+        XCTAssertEqual(i, 1, "应命中自己（索引 1），而不是 code 相同的 B（索引 0）")
+    }
+
+    // MARK: - locateForOverwrite：id 或身份键
+
+    func testOverwriteLocatesByID() {
+        let a = mk("1.0.1.8.0.255")
+        var m = a; m.name = "改过名"
+        let i: Int? = ObisLibraryOps.locateForOverwrite([a], item: m)
+        XCTAssertEqual(i, 0)
+    }
+
+    func testOverwriteLocatesByIdentityKeyWithFreshID() {
+        let a = mk("1.0.1.8.0.255", "旧名")
+        var fresh = mk("1.0.1.8.0.255", "新名")        // 新 id、同身份键
+        fresh.id = UUID()
+        let i: Int? = ObisLibraryOps.locateForOverwrite([a], item: fresh)
+        XCTAssertEqual(i, 0, "导入/预置应覆盖去重")
+    }
+
+    /// 类不同 → 身份键不同 → **不能**被判为同一条（否则装不下这类条目）。
+    func testOverwriteDistinguishesClass() {
+        let a = mk("1.0.1.8.0.255", cls: 3)
+        let b = mk("1.0.1.8.0.255", cls: 4)
+        let i: Int? = ObisLibraryOps.locateForOverwrite([a], item: b)
+        XCTAssertNil(i, "类不同是两个对象，不该被覆盖")
+    }
+
+    /// 属性不同 → 身份键不同 → 不能被判为同一条。
+    func testOverwriteDistinguishesAttribute() {
+        let a = mk("1.0.1.8.0.255", attr: 2)
+        let b = mk("1.0.1.8.0.255", attr: 3)
+        let i: Int? = ObisLibraryOps.locateForOverwrite([a], item: b)
+        XCTAssertNil(i, "属性不同是两次不同操作，不该被覆盖")
+    }
+
+    /// 逻辑名写法不同但归一后相同 → 应判为同一条。
+    func testOverwriteNormalizesCodeSpelling() {
+        let a = mk("1.0.1.8.0.255")
+        var weird = mk("1-0:1.8.0*255")
+        weird.id = UUID()
+        let i: Int? = ObisLibraryOps.locateForOverwrite([a], item: weird)
+        XCTAssertEqual(i, 0, "写法不同但归一后同一逻辑名，应覆盖")
+    }
+
+    // MARK: - remembered：去重 → 置顶 → 截断
+
+    func testRememberedDedupsAndPutsFirst() {
+        let out: [String] = ObisLibraryOps.remembered(["b", "a"], adding: "a", limit: 30)
+        XCTAssertEqual(out, ["a", "b"], "已存在的应删掉再插到最前（保证'最近'语义）")
+    }
+
+    func testRememberedAppendsNewAtFront() {
+        let out: [String] = ObisLibraryOps.remembered(["b"], adding: "c", limit: 30)
+        XCTAssertEqual(out, ["c", "b"])
+    }
+
+    func testRememberedCapsAtLimit() {
+        let out: [String] = ObisLibraryOps.remembered(["a", "b", "c"], adding: "d", limit: 3)
+        XCTAssertEqual(out, ["d", "a", "b"], "超上限取前 limit 条（最旧的被挤掉）")
+    }
+
+    // MARK: - trimmedTail：高水位裁剪
+
+    /// 未到高水位 → 返回 nil（调用方不赋值，避免无谓触发 `@Published` 刷新）。
+    func testTrimmedTailBelowHighWaterReturnsNil() {
+        let t: [Int]? = ObisLibraryOps.trimmedTail([1, 2, 3], highWater: 5, limit: 2)
+        XCTAssertNil(t)
+    }
+
+    /// 刚好等于高水位 → 仍不裁（判据是 `>` 不是 `>=`）。
+    func testTrimmedTailAtHighWaterIsNotTrimmed() {
+        let t: [Int]? = ObisLibraryOps.trimmedTail([1, 2, 3], highWater: 3, limit: 2)
+        XCTAssertNil(t)
+    }
+
+    func testTrimmedTailAboveHighWaterKeepsSuffix() {
+        let t: [Int]? = ObisLibraryOps.trimmedTail([1, 2, 3, 4], highWater: 3, limit: 2)
+        XCTAssertEqual(t, [3, 4], "保留尾部 limit 条（最新）")
+    }
+}
+
 /// `NumberInput.parse`：被 3 处调用（主界面类/属性、OBIS 编辑器、导入器），此前**零测试**。
 /// 用例全部来自本机实测（不是按 `Int(_:radix:)` 的文档推的 —— 推理错过一次）。
 final class NumberInputTests: XCTestCase {

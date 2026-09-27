@@ -24,6 +24,8 @@ final class Store: ObservableObject {
     @Published var parseEntries: [String] = []
     /// 解析历史条数上限（与 logs 同理，防长会话无限增长）。
     static let parseEntryLimit = 200
+    /// 「最近 OBIS」保留条数（下拉菜单渲染全量，所以别设太大 —— 见 §20 的取舍讨论）。
+    static let recentLimit = 30
     /// 高水位：与 `logs` 同一套做法 —— 超了才一次性裁回上限。
     /// 原来这里是「每次追加超限即 `removeFirst(k)`」，count 刚过上限时每条都要
     /// O(n) 搬移；虽然解析追加频率低（每次操作 1 条），但两套口径不一致容易被
@@ -35,8 +37,8 @@ final class Store: ObservableObject {
         let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         parseEntries.append(trimmed)
-        if parseEntries.count > Store.parseHighWater {
-            parseEntries = Array(parseEntries.suffix(Store.parseEntryLimit))
+        if let t = ObisLibraryOps.trimmedTail(parseEntries, highWater: Store.parseHighWater, limit: Store.parseEntryLimit) {
+            parseEntries = t
         }
     }
 
@@ -104,7 +106,7 @@ final class Store: ObservableObject {
     ///      → 把 **B 覆盖掉**（B 在数组里靠前时就中招）。
     /// （见 `docs/DLMS调试台-方案.md` §20 与核对记录。）
     func save(obis: ObisItem) {
-        if let i = obisLibrary.firstIndex(where: { $0.id == obis.id }) {
+        if let i = ObisLibraryOps.locateForSave(obisLibrary, id: obis.id) {
             obisLibrary[i] = obis
         } else {
             obisLibrary.append(obis)
@@ -118,8 +120,7 @@ final class Store: ObservableObject {
     /// 所以这里保留覆盖语义 —— 只把键从"裸 code"换成"身份键"，
     /// 这样 `1-0:1.8.0*255` 与 `1.0.1.8.0.255` 也能正确归并（原来按原文比会漏）。
     func upsert(obis: ObisItem) {
-        let key = obis.identityKey
-        if let i = obisLibrary.firstIndex(where: { $0.id == obis.id || $0.identityKey == key }) {
+        if let i = ObisLibraryOps.locateForOverwrite(obisLibrary, item: obis) {
             var m = obis; m.id = obisLibrary[i].id; obisLibrary[i] = m
         } else {
             obisLibrary.append(obis)
@@ -153,8 +154,8 @@ final class Store: ObservableObject {
         // P1：不要用 `removeFirst(1)` 逐条裁。到上限后每追加一条都要前移约 2000 个元素
         //（O(n)），报文高频时这是实打实的主线程热点（叠加 @Published 触发 UI 刷新）。
         // 改成「超过高水位才一次性切回上限」，把那次 O(n) 摊薄到每 500 条一次。
-        if logs.count > Store.logHighWater {
-            logs = Array(logs.suffix(Store.logLimit))
+        if let t = ObisLibraryOps.trimmedTail(logs, highWater: Store.logHighWater, limit: Store.logLimit) {
+            logs = t
         }
     }
     func clearLogs() { logs.removeAll() }
@@ -166,9 +167,7 @@ final class Store: ObservableObject {
     /// 数组仍是 `[String]`，所以 `recent.json` 的结构不变，无需改 Codable；
     /// 旧存档里那些"裸 code"由 `ObisUtil.codePart(ofKey:)` 兼容处理。
     func rememberObis(_ key: String) {
-        recentObis.removeAll { $0 == key }
-        recentObis.insert(key, at: 0)
-        if recentObis.count > 30 { recentObis = Array(recentObis.prefix(30)) }
+        recentObis = ObisLibraryOps.remembered(recentObis, adding: key, limit: Store.recentLimit)
         persist()
     }
 }

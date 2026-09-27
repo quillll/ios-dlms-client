@@ -186,6 +186,55 @@ extension ObisItem {
     }
 }
 
+// MARK: - OBIS 清单的纯逻辑
+
+/// `Store` 里那些**与 Combine 无关**的判断：定位 / 去重 / 截断。
+///
+/// 为什么单独抽出来：`Store` 是 `ObservableObject`（`import Combine`），
+/// 而 **Combine 在 Windows 上不存在** → 本机编不了、只能等 CI（约 5 分钟一轮）。
+/// 抽到这里（纯 Foundation）就能**本机编译真实实现 + 跑用例**，几秒出结果。
+/// 这也让"写路径不能合并"这类易错规则有了可执行的守卫，而不是只靠注释。
+enum ObisLibraryOps {
+
+    /// **编辑器保存**的定位规则：**只看 `id`**。找不到返回 nil（调用方追加）。
+    ///
+    /// ⚠️ **绝不能改成"按 code / 身份键"匹配** —— 两个已实测复现的问题：
+    /// ① **复制**一条（新 id、同 code）会把**原条目改掉**，而不是新增；
+    /// ② 编辑 A 时把它的 code 改成与 B 相同，`firstIndex` 按数组顺序可能命中 B
+    ///    → 把 **B 覆盖掉**（B 在数组里靠前时就中招）。
+    static func locateForSave(_ library: [ObisItem], id: UUID) -> Int? {
+        library.firstIndex { $0.id == id }
+    }
+
+    /// **导入 / 常用预置**的定位规则：按 `id` **或身份键**（类 + 逻辑名 + 属性）覆盖去重。
+    /// 这两个入口的既有契约就是"覆盖去重"，所以这里保留覆盖语义。
+    static func locateForOverwrite(_ library: [ObisItem], item: ObisItem) -> Int? {
+        let key = item.identityKey
+        return library.firstIndex { $0.id == item.id || $0.identityKey == key }
+    }
+
+    /// 「最近」列表：去重 → 置顶 → 截断到 `limit`。
+    /// 已存在则**先删再插到最前**（保证"最近"语义），不是原地不动。
+    static func remembered(_ existing: [String], adding key: String, limit: Int) -> [String] {
+        var out = existing
+        out.removeAll { $0 == key }
+        out.insert(key, at: 0)
+        if out.count > limit { out = Array(out.prefix(limit)) }
+        return out
+    }
+
+    /// 追加式列表（`logs` / `parseEntries`）的**高水位裁剪**：超过 `highWater` 时
+    /// 返回应保留的**尾部 `limit` 条**；否则返回 `nil`。
+    ///
+    /// 返回 Optional 是刻意的：调用方只在非 nil 时赋值，**避免每次追加都触发
+    /// `@Published` 刷新**（原实现就是这个形状）。用滞后量把 O(n) 摊薄 ——
+    /// 不这么做的话，到上限后每追加一条都要前移约 2000 个元素。
+    static func trimmedTail<T>(_ items: [T], highWater: Int, limit: Int) -> [T]? {
+        guard items.count > highWater else { return nil }
+        return Array(items.suffix(limit))
+    }
+}
+
 // MARK: - 报文日志条目
 struct LogEntry: Identifiable, Equatable {
     enum Level: String, CaseIterable { case debug, info, warn, error }
