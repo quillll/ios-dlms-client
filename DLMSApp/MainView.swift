@@ -562,16 +562,20 @@ struct MainView: View {
                     // 报文行：TX/RX 与报文类型各占固定列，HEX 放下一行独占整宽。
                     Text(e.text).font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(color(for: e.kind)).frame(width: 26, alignment: .leading)
-                    // 类型列是**启发式**识别、可能误标（R20），所以标一个 ⓘ；
-                    // 长按本行有说明。列宽 92 → 104 是给角标腾位
-                    //（HEX 已独占下一行，首行本来就有富余，见上面的注释）。
+                    // 类型列是**启发式**识别、可能误标（R20），所以标一个 ⓘ（说明在面板标题栏）。
+                    //
+                    // ⚠️ **不要给它设固定宽度** ✗ —— 原来写死 104pt，而最长的标签是
+                    // `Action-Response`（15 字符），caption2 等宽下约需 113pt
+                    // → `Action-Request` 被截成 `Action-Requ…`（现场截图实拍）。
+                    // 而**首行右侧本来就空着**（HEX 已独占下一行满宽），所以让它按内容
+                    // 自然取宽即可 —— 不会挤到任何东西，也就没有"限制长度"的理由。
+                    // `.lineLimit(1)` 纯属兜底：已知最长 15 字符，远小于可用宽度，实际永不触发。
                     HStack(spacing: 3) {
                         Text(e.label).font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(.secondary).lineLimit(1)
                         Image(systemName: "info.circle")
                             .font(.system(size: 9)).foregroundStyle(.tertiary)
                     }
-                    .frame(width: 104, alignment: .leading)
                     Spacer(minLength: 0)
                 } else {
                     // 信息行：`text` 本身就是整句消息（如"建链失败: Data receive failed."），
