@@ -148,6 +148,16 @@ extension ObisItem {
     }
 }
 
+extension ObisItem {
+    /// 本条目的身份键（类 + 逻辑名 + 属性）。
+    ///
+    /// **计算属性** —— 不需要进 `CodingKeys`；`tools/chk_codingkeys.py` 只校验存储属性，
+    /// 加进 CodingKeys 反而会因"找不到同名存储属性"而整份不满足 `Decodable`。
+    var identityKey: String {
+        ObisUtil.identityKey(code: code, objectClass: objectClass, attribute: attribute)
+    }
+}
+
 // MARK: - 报文日志条目
 struct LogEntry: Identifiable, Equatable {
     enum Level: String, CaseIterable { case debug, info, warn, error }
@@ -548,6 +558,27 @@ enum ObisUtil {
             .replacingOccurrences(of: ":", with: ".")
             .replacingOccurrences(of: "*", with: ".")
             .replacingOccurrences(of: ",", with: ".")
+    }
+
+    /// **对象身份键 = 类 + 逻辑名(归一) + 属性**。
+    ///
+    /// DLMS 是按 `class-id + instance-id + attribute-id` **三者共同寻址**的
+    ///（Get-Request-Normal 里就是这三个字段）。所以：
+    ///   - 同一个逻辑名可以存在于**不同的类**（类3 Register 与 类4 扩展寄存器是两个对象）；
+    ///   - 同一个对象可以取**不同的属性**（attr2 读值 与 attr3 读量纲是两次不同操作）。
+    /// → **不能只拿 code 当身份**，否则上面两种情况会互相覆盖。
+    /// 归一仍走 `comparisonKey`，所以 `1-0:1.8.0*255` 与 `1.0.1.8.0.255` 视为同一逻辑名。
+    static func identityKey(code: String, objectClass: Int, attribute: Int) -> String {
+        let parts = [String(objectClass), comparisonKey(code), String(attribute)]
+        return parts.joined(separator: "|")
+    }
+
+    /// 从身份键里取回"逻辑名"部分，用于展示（如「最近」列表）。
+    /// 不是身份键（旧存档存的只是归一 code）就原样返回。
+    static func codePart(ofKey key: String) -> String {
+        let parts = key.split(separator: "|")
+        if parts.count == 3 { return String(parts[1]) }
+        return key
     }
 
     /// 分隔符兼容 `* , . - :`；段内含 a-f 或 0x 前缀 → 16 进制，否则十进制。

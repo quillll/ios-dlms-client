@@ -425,6 +425,66 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// 对象身份键 = **类 + 逻辑名(归一) + 属性**（DLMS 三元寻址）。
+/// 判据：只改类 / 只改属性，键必须不同；只改逻辑名的写法，键必须相同。
+final class ObisIdentityKeyTests: XCTestCase {
+
+    func testKeyIsClassPlusCodePlusAttribute() {
+        let k: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 3, attribute: 2)
+        XCTAssertEqual(k, "3|1.0.1.8.0.255|2")
+    }
+
+    /// 同一逻辑名在不同类 → 两个不同对象，键必须不同。
+    func testSameCodeDifferentClassDiffers() {
+        let k1: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 3, attribute: 2)
+        let k2: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 4, attribute: 2)
+        XCTAssertNotEqual(k1, k2)
+    }
+
+    /// 同一对象取不同属性 → 两次不同操作，键必须不同。
+    func testSameCodeDifferentAttributeDiffers() {
+        let k1: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 3, attribute: 2)
+        let k2: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 3, attribute: 3)
+        XCTAssertNotEqual(k1, k2)
+    }
+
+    /// 逻辑名写法不同 → 归一后视为同一逻辑名，键必须相同。
+    func testCodeSpellingsAreNormalized() {
+        let plain: String = ObisUtil.identityKey(code: "1.0.1.8.0.255", objectClass: 3, attribute: 2)
+        let weird: String = ObisUtil.identityKey(code: "1-0:1.8.0*255", objectClass: 3, attribute: 2)
+        let spaced: String = ObisUtil.identityKey(code: " 1.0.1.8.0.255 ", objectClass: 3, attribute: 2)
+        XCTAssertEqual(weird, plain)
+        XCTAssertEqual(spaced, plain)
+    }
+
+    func testItemConvenienceProperty() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", unit: "kWh", objectClass: 3)
+        a.attribute = 2
+        XCTAssertEqual(a.identityKey, "3|1.0.1.8.0.255|2")
+
+        // 复制出来的新条目（新 id、内容相同）→ 键相同 → 应被判为重复
+        var b = a
+        b.id = UUID()
+        XCTAssertEqual(b.identityKey, a.identityKey)
+    }
+
+    func testCodePartExtractsLogicalName() {
+        let v: String = ObisUtil.codePart(ofKey: "3|1.0.1.8.0.255|2")
+        XCTAssertEqual(v, "1.0.1.8.0.255")
+    }
+
+    /// 旧存档里存的是归一后的 code（没有类/属性），必须原样返回，不能当成键去切。
+    func testCodePartHandlesLegacyPlainCode() {
+        let v: String = ObisUtil.codePart(ofKey: "1.0.1.8.0.255")
+        XCTAssertEqual(v, "1.0.1.8.0.255")
+    }
+
+    func testCodePartHandlesEmpty() {
+        let v: String = ObisUtil.codePart(ofKey: "")
+        XCTAssertEqual(v, "")
+    }
+}
+
 /// C 层 `dlms_renderValue` 的两行块 → 取纯值（状态栏回显用）。
 /// 样例按 `DLMSBridge.c` 里 `dlms_renderValue` 的**实际输出格式**构造，不是手抄报文。
 final class ParseBlockTests: XCTestCase {
