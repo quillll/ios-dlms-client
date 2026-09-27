@@ -156,6 +156,26 @@ extension ObisItem {
     var identityKey: String {
         ObisUtil.identityKey(code: code, objectClass: objectClass, attribute: attribute)
     }
+
+    /// 下拉菜单 / 「最近」列表用的标签，格式（用户定的）：
+    /// ```
+    /// 正向有功总电量 3*1.0.1.8.0.255*2
+    /// 进厂   1*0.0.202.8.0.255*2*12F001      ← 带请求数据时
+    /// ```
+    /// 即 `名称 类*逻辑名*属性[*请求数据]`。
+    ///
+    /// 为什么要带类与属性：身份就是这三者 —— 同一个逻辑名可能有多条
+    /// （不同类或不同属性），只写「名称 · code」的话它们在菜单里长得一模一样，
+    /// 根本分不清该选哪条。
+    ///
+    /// ⚠️ **纯展示用**：串里含 `*` 与 `.`，而 `ObisUtil.parse` 把两者都当分隔符
+    /// （会切成 8 段 → 判为非法），所以它**不能贴回 OBIS 输入框**。
+    var menuLabel: String {
+        let title = name.isEmpty ? code : name
+        var s = "\(title) \(objectClass)*\(code)*\(attribute)"
+        if !data.isEmpty { s += "*\(data)" }
+        return s
+    }
 }
 
 // MARK: - 报文日志条目

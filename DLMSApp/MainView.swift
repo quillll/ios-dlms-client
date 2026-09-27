@@ -134,7 +134,7 @@ struct MainView: View {
                             ForEach(store.obisLibrary) { item in
                                 // 直接传整条：身份是「类 + 逻辑名 + 属性」，
                                 // 按 logic name 反查会有歧义（见 selectObis(_:)）
-                                Button(item.displayName) { selectObis(item) }
+                                Button(item.menuLabel) { selectObis(item) }
                             }
                         }
                     } label: {
@@ -207,10 +207,10 @@ struct MainView: View {
         return store.obisLibrary.first { ObisUtil.comparisonKey($0.code) == legacy }
     }
 
-    /// 「最近」里一条的显示名：能反查到就用它的名字，否则退回逻辑名部分
-    ///（避免把 `3|1.0.1.8.0.255|2` 这种键原样显示出来）。
+    /// 「最近」里一条的显示名：能反查到就用它的菜单标签（`名称 类*逻辑名*属性`），
+    /// 否则退回逻辑名部分（避免把 `3|1.0.1.8.0.255|2` 这种键原样显示出来）。
     private func recentLabel(_ key: String) -> String {
-        if let hit = libraryItem(forKey: key) { return hit.displayName }
+        if let hit = libraryItem(forKey: key) { return hit.menuLabel }
         return ObisUtil.codePart(ofKey: key)
     }
 

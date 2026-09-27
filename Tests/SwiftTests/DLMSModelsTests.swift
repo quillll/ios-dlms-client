@@ -425,6 +425,58 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// 下拉菜单 / 「最近」列表的标签，格式由用户指定：`名称 类*逻辑名*属性[*请求数据]`。
+final class ObisMenuLabelTests: XCTestCase {
+
+    func testPlain() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", unit: "kWh", objectClass: 3)
+        a.attribute = 2
+        let v: String = a.menuLabel
+        XCTAssertEqual(v, "正向有功总电量 3*1.0.1.8.0.255*2")
+    }
+
+    func testWithRequestData() {
+        var b = ObisItem(code: "0.0.202.8.0.255", name: "进厂", objectClass: 1)
+        b.attribute = 2
+        b.data = "12F001"
+        let v: String = b.menuLabel
+        XCTAssertEqual(v, "进厂 1*0.0.202.8.0.255*2*12F001")
+    }
+
+    /// 没有名称时用逻辑名当标题。
+    func testFallsBackToCodeWhenNoName() {
+        let c = ObisItem(code: "0.0.96.1.0.255", objectClass: 1)
+        let v: String = c.menuLabel
+        XCTAssertEqual(v, "0.0.96.1.0.255 1*0.0.96.1.0.255*2")
+    }
+
+    /// 这个串含 `*` 与 `.`，而 `ObisUtil.parse` 把两者都当分隔符 → 会被切成多段判为非法。
+    /// 钉住这一点：它是**纯展示**标签，不能贴回 OBIS 输入框。
+    func testLabelIsNotParseableAsObis() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 3)
+        a.attribute = 2
+        XCTAssertNil(ObisUtil.parse(a.menuLabel))
+    }
+
+    /// 同一个逻辑名、类不同 → 标签必须不同，否则菜单里分不清该选哪条。
+    func testDifferentClassYieldsDifferentLabel() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 3)
+        a.attribute = 2
+        var d = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 4)
+        d.attribute = 2
+        XCTAssertNotEqual(a.menuLabel, d.menuLabel)
+    }
+
+    /// 同一个逻辑名、同类、属性不同 → 标签必须不同。
+    func testDifferentAttributeYieldsDifferentLabel() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 3)
+        a.attribute = 2
+        var e = a
+        e.attribute = 3
+        XCTAssertNotEqual(a.menuLabel, e.menuLabel)
+    }
+}
+
 /// 对象身份键 = **类 + 逻辑名(归一) + 属性**（DLMS 三元寻址）。
 /// 判据：只改类 / 只改属性，键必须不同；只改逻辑名的写法，键必须相同。
 final class ObisIdentityKeyTests: XCTestCase {
