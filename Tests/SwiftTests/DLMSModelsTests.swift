@@ -475,6 +475,36 @@ final class ObisMenuLabelTests: XCTestCase {
         e.attribute = 3
         XCTAssertNotEqual(a.menuLabel, e.menuLabel)
     }
+
+    /// 单独抽出来的身份部分 `类*逻辑名*属性[*请求数据]`（清单行用它，下拉的 menuLabel 也由它拼）。
+    func testIdentityLabel() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 3)
+        a.attribute = 2
+        let v: String = a.identityLabel
+        XCTAssertEqual(v, "3*1.0.1.8.0.255*2")
+    }
+
+    func testIdentityLabelWithRequestData() {
+        var b = ObisItem(code: "0.0.202.8.0.255", name: "进厂", objectClass: 1)
+        b.attribute = 2
+        b.data = "12F001"
+        let v: String = b.identityLabel
+        XCTAssertEqual(v, "1*0.0.202.8.0.255*2*12F001")
+    }
+
+    /// 没有请求数据时**不能**留下多余的分隔符。
+    func testIdentityLabelHasNoTrailingSeparator() {
+        let c = ObisItem(code: "1.0.1.8.0.255", name: "x", objectClass: 3)
+        XCTAssertFalse(c.identityLabel.hasSuffix("*"))
+    }
+
+    /// 钉住"两处由同一属性派生"：menuLabel ≡ 标题 + 空格 + identityLabel。
+    /// 这样下拉与清单**不可能**显示得不一样。
+    func testMenuLabelIsTitlePlusIdentityLabel() {
+        var a = ObisItem(code: "1.0.1.8.0.255", name: "正向有功总电量", objectClass: 3)
+        a.attribute = 2
+        XCTAssertEqual(a.menuLabel, a.name + " " + a.identityLabel)
+    }
 }
 
 /// 对象身份键 = **类 + 逻辑名(归一) + 属性**（DLMS 三元寻址）。

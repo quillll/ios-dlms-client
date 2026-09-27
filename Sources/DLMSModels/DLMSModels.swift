@@ -170,11 +170,19 @@ extension ObisItem {
     ///
     /// ⚠️ **纯展示用**：串里含 `*` 与 `.`，而 `ObisUtil.parse` 把两者都当分隔符
     /// （会切成 8 段 → 判为非法），所以它**不能贴回 OBIS 输入框**。
-    var menuLabel: String {
-        let title = name.isEmpty ? code : name
-        var s = "\(title) \(objectClass)*\(code)*\(attribute)"
+    /// 身份部分：`类*逻辑名*属性[*请求数据]`。
+    ///
+    /// 单独抽出来是为了让**下拉菜单与清单共用同一段字符串** ——
+    /// `menuLabel` = 标题 + 空格 + 它。两处由同一个属性派生，不可能不一致。
+    var identityLabel: String {
+        var s = "\(objectClass)*\(code)*\(attribute)"
         if !data.isEmpty { s += "*\(data)" }
         return s
+    }
+
+    var menuLabel: String {
+        let title = name.isEmpty ? code : name
+        return "\(title) \(identityLabel)"
     }
 }
 

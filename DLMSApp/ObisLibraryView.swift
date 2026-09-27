@@ -32,38 +32,34 @@ struct ObisLibraryView: View {
                 ForEach(filtered) { item in
                     HStack(spacing: 6) {
                         VStack(alignment: .leading, spacing: 3) {
-                            // 行 1 只放**名称**。
-                            // 原来用的是 `displayName`（= "名称 · code"），而下一行又是 code
-                            // → code 被显示两遍、白占一行（见 docs/UI评审-核对报告.md §3.1）。
+                            // 与**下拉菜单同一套格式**（用户定的）：
+                            //   行1 = 标题（名称；无名称时用逻辑名）
+                            //   行2 = 身份部分 `类*逻辑名*属性[*请求数据]`
+                            // 两处都派生自 `ObisItem.identityLabel`，不可能不一致。
+                            //
+                            // 之前是「名称 · code」+「类N 属N」徽标 +「→ 数据」三行，
+                            // 既和下拉不统一，请求数据还重复显示了一次。
                             Text(item.name.isEmpty ? item.code : item.name).font(.body)
-                            HStack(spacing: 5) {
-                                // 身份是「类 + 逻辑名 + 属性」，所以必须把类/属性也显示出来 ——
-                                // 否则两条同逻辑名的条目（不同类或不同属性）在列表里长得一模一样。
-                                Text("类\(item.objectClass) 属\(item.attribute)")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(RoundedRectangle(cornerRadius: 4)
-                                        .fill(Color.secondary.opacity(0.16)))
-                                Text(item.unit.isEmpty ? item.code : "\(item.code) · \(item.unit)")
-                                    .font(.caption).monospaced().foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            // 配了请求数据的条目直接标出来（Set/Action 时会被自动填入）
-                            if !item.data.isEmpty {
-                                Text("→ \(item.data)")
-                                    .font(.caption2).monospaced().foregroundStyle(.tertiary)
-                            }
+                            Text(item.identityLabel)
+                                .font(.caption).monospaced().foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 4)
                         // **复制一条**：以本条为模板打开编辑器，保存时作为**新条目**插入
                         //（保存前会按「类 + 逻辑名 + 属性」查重，重复则拦下）。
                         // 注：**滑动删除本来就有**（下面的 .onDelete），不必再加。
+                        // ⚠️ `.buttonStyle(.borderless)` **不能省**：
+                        // SwiftUI 的 List 行里放多个 Button 时，默认样式下**不做命中区分** ——
+                        // 点哪个都可能触发到另一个（现象：点"复制"却弹出"编辑"界面，
+                        // 早期版本表现为"复制点了没反应"，其实是被行吞了去开编辑）。
                         Button {
                             copySource = item; editing = nil; showEditor = true
                         } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(.borderless)
                         Button {
                             editing = item; copySource = nil; showEditor = true
                         } label: { Image(systemName: "pencil") }
+                        .buttonStyle(.borderless)
                     }
                     // 放大点击目标（原来贴得较紧，单手现场操作不好点）
                     .padding(.vertical, 7)
@@ -73,7 +69,12 @@ struct ObisLibraryView: View {
             .navigationTitle("OBIS 清单")
             .searchable(text: $query, prompt: "搜索名称或 OBIS 代码")
             .toolbar { toolbarItems }
-            .sheet(isPresented: $showEditor) {
+            .sheet(isPresented: $showEditor, onDismiss: {
+                // 每次关闭都清空两个源：下次打开必定是干净状态。
+                // （不清的话，上次编辑残留的 `editing` 会让下一次变成"编辑"模式。）
+                editing = nil
+                copySource = nil
+            }) {
                 ObisEditorSheet(item: $editing, template: copySource).environmentObject(store)
             }
             .sheet(isPresented: $showPresets) { presetSheet }
