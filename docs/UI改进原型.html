@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DLMS 调试台 · UI 改进原型</title>
+<style>
+  :root{
+    --bg:#ececf0;
+    --page:#f7f7fa;
+    --card:#ffffff;
+    --sep:rgba(60,60,67,.13);
+    --label:#000;
+    --label2:rgba(60,60,67,.6);
+    --label3:rgba(60,60,67,.32);
+    --blue:#007aff;
+    --green:#34c759;
+    --orange:#ff9500;
+    --purple:#af52de;
+    --red:#ff3b30;
+    --teal:#30b0c7;
+    --gray:#c7c7cc;
+    --radius:10px;
+  }
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--page);
+    color:#1c1c1e;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:15px;line-height:1.5;
+  }
+
+  /* ── 页面外壳 ───────────────────────────── */
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:-.4px}
+  .sub{color:var(--label2);font-size:13.5px;margin:0 0 4px}
+  .sub code{background:rgba(60,60,67,.08);padding:1px 5px;border-radius:4px;font-size:12.5px}
+
+  .toolbar{
+    display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+    margin:18px 0 6px;padding:12px 14px;background:#fff;border:1px solid var(--sep);
+    border-radius:12px;
+  }
+  .toolbar label{display:flex;align-items:center;gap:6px;font-size:13.5px;cursor:pointer;user-select:none}
+  .toolbar input[type=checkbox]{width:16px;height:16px;accent-color:var(--blue);cursor:pointer}
+  .toolbar .sp{flex:1}
+  .hint{font-size:12.5px;color:var(--label3)}
+
+  .tabs{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 22px}
+  .tab{
+    padding:8px 15px;border-radius:99px;border:1px solid var(--sep);background:#fff;
+    font-size:13.5px;cursor:pointer;color:var(--label2);transition:.15s;white-space:nowrap;
+  }
+  .tab:hover{border-color:var(--blue);color:var(--blue)}
+  .tab.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+
+  .stage{display:none}
+  .stage.on{display:block}
+  .pair{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+  .col{flex:0 0 auto}
+  .col > .cap{
+    font-size:13px;font-weight:600;margin:0 0 9px 3px;letter-spacing:.2px;
+    display:flex;align-items:center;gap:7px;
+  }
+  .cap .dot{width:8px;height:8px;border-radius:99px;display:inline-block}
+  .cap.before .dot{background:var(--gray)}
+  .cap.after .dot{background:var(--green)}
+
+  /* ── 手机框 ─────────────────────────────── */
+  .scaler{width:330px;height:736px;position:relative;overflow:hidden}
+  .phone{
+    width:390px;height:869px;background:#000;border-radius:52px;padding:11px;
+    box-shadow:0 18px 44px rgba(0,0,0,.20),0 2px 8px rgba(0,0,0,.10);
+    transform:scale(.846);transform-origin:top left;position:absolute;top:0;left:0;
+  }
+  .screen{
+    width:100%;height:100%;background:var(--bg);border-radius:42px;overflow:hidden;
+    display:flex;flex-direction:column;position:relative;
+  }
+
+  /* 状态栏 */
+  .statusbar{
+    height:50px;flex:0 0 50px;display:flex;align-items:flex-end;justify-content:space-between;
+    padding:0 30px 7px;font-size:14.5px;font-weight:600;letter-spacing:-.2px;
+  }
+  .sb-right{display:flex;align-items:center;gap:5px}
+  .bars{display:flex;align-items:flex-end;gap:1.5px;height:11px}
+  .bars i{width:3px;background:#000;border-radius:1px;display:block}
+  .bars i:nth-child(1){height:4px}.bars i:nth-child(2){height:6px}
+  .bars i:nth-child(3){height:8.5px}.bars i:nth-child(4){height:11px}
+  .batt{width:24px;height:12px;border:1.4px solid rgba(0,0,0,.45);border-radius:3.5px;position:relative;padding:1.5px}
+  .batt::after{content:"";position:absolute;right:-3.5px;top:3.5px;width:2px;height:5px;background:rgba(0,0,0,.35);border-radius:0 1px 1px 0}
+  .batt i{display:block;height:100%;border-radius:1.5px;background:#000}
+  .island{
+    position:absolute;top:11px;left:50%;transform:translateX(-50%);
+    width:112px;height:31px;background:#000;border-radius:99px;z-index:5;
+  }
+
+  /* 导航栏 */
+  .nav{
+    flex:0 0 auto;padding:2px 20px 8px;display:flex;align-items:center;justify-content:space-between;
+  }
+  .nav .big{font-size:31px;font-weight:700;letter-spacing:-.7px}
+  .nav .center{font-size:17px;font-weight:600}
+  .gear{font-size:19px;color:var(--blue)}
+  .navbtn{color:var(--blue);font-size:17px;background:none;border:0;padding:0;font-family:inherit}
+
+  /* 内容区 */
+  .body{flex:1;overflow:hidden;padding:0 16px}
+  .body.form{padding:0}
+  .scrollsim{overflow:hidden}
+
+  .card{background:var(--card);border-radius:var(--radius);overflow:hidden}
+  .card + .card{margin-top:18px}
+  .sec-title{
+    font-size:12.5px;color:var(--label2);text-transform:none;padding:0 4px 6px;
+    letter-spacing:.2px;
+  }
+  .sec-title.up{text-transform:uppercase;font-size:11.5px;letter-spacing:.5px}
+  .sec-foot{font-size:12px;color:var(--label2);padding:6px 4px 0;line-height:1.42}
+
+  /* 「已滚过」提示条（模拟 Form 滚动位置） */
+  .stub{
+    text-align:center;font-size:11.5px;color:var(--label3);
+    padding:9px 16px 5px;letter-spacing:.2px;
+  }
+  /* 原型内的说明卡（非 App 真实 UI，仅用于解释改动） */
+  .oknote{
+    margin:16px 20px 0;padding:11px 13px;border-radius:9px;
+    background:rgba(0,122,255,.08);color:#0055b3;font-size:12.5px;line-height:1.45;
+  }
+  .oknote b{font-weight:700}
+  .clippednote{
+    margin:16px 20px 0;padding:11px 13px;border-radius:9px;
+    background:rgba(255,59,48,.07);color:#a81b12;font-size:12.5px;line-height:1.45;
+  }
+  .clippednote b{font-weight:700}
+
+  .row{
+    display:flex;align-items:center;gap:10px;padding:0 15px;min-height:44px;
+    border-top:1px solid var(--sep);
+  }
+  .row:first-child{border-top:0}
+  .row .k{font-size:16.5px;color:var(--label)}
+  .row .sp{flex:1}
+  .row .v{font-size:16.5px;color:var(--label2);text-align:right}
+  .row .v.mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+  .row .chev{color:var(--label3);font-size:13px}
+
+  /* 主界面专用 */
+  .sumcard{background:var(--card);border-radius:12px;padding:13px 14px;margin-bottom:12px}
+  .sum-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .sum-ip{font-size:19px;font-weight:700;letter-spacing:-.3px}
+  .sum-sub{display:flex;align-items:baseline;gap:8px;margin-top:5px}
+  .sum-sub .a{font-size:14px;color:var(--label2)}
+  .sum-sub .sp{flex:1}
+  .sum-sub .b{font-size:11.5px;color:var(--label3)}
+
+  .btn-test{
+    background:var(--blue);color:#fff;border:0;border-radius:99px;
+    padding:7px 13px;font-size:14.5px;font-weight:500;font-family:inherit;
+    display:flex;align-items:center;gap:5px;
+  }
+
+  /* 输入框 —— 现状：裸框（无标签） */
+  .bare-field{
+    border:1px solid rgba(60,60,67,.22);background:#fff;border-radius:9px;
+    padding:9px 11px;font-size:16px;width:100%;font-family:inherit;color:var(--label);
+  }
+  .bare-field::placeholder{color:var(--label3)}
+  .row2{display:flex;gap:9px;align-items:center;margin-bottom:9px}
+
+  /* 输入框 —— 改进：常驻标签 */
+  .labeled{display:flex;flex-direction:column;gap:4px}
+  .labeled > .flabel{
+    font-size:12px;font-weight:600;color:var(--label2);letter-spacing:.3px;
+    display:flex;align-items:center;gap:4px;
+  }
+  .labeled > .flabel .req{color:var(--red,#ff3b30);font-size:11px}
+  .fbox{
+    border:1px solid rgba(60,60,67,.22);background:#fff;border-radius:9px;
+    padding:9px 11px;font-size:16px;font-family:inherit;color:var(--label);width:100%;
+  }
+  .fbox::placeholder{color:var(--label3)}
+  .fbox.mono{font-family:ui-monospace,Consolas,"Courier New",monospace}
+  .fhint{font-size:11.5px;color:var(--label3);display:flex;gap:4px;align-items:flex-start;line-height:1.35}
+  .fhint.warn{color:var(--orange)}
+  /* 字段标签行右侧的状态位（原地利用标签行的空档，不占额外高度） */
+  .fstat{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--label3);letter-spacing:0;white-space:nowrap}
+  .fstat.warn{color:var(--orange);font-weight:600}
+  /* 输入框内的状态图标（最紧凑） */
+  .finbox{display:flex;align-items:center;gap:7px}
+  .finbox .fbox{flex:1}
+  .finbox .fic{font-size:13px;color:var(--label3);flex:0 0 auto}
+  .finbox .fic.warn{color:var(--orange)}
+
+  .hintline{display:flex;gap:5px;align-items:flex-start;font-size:11.5px;color:var(--label2);margin:7px 1px 10px;line-height:1.4}
+  .hintline.warn{color:var(--orange)}
+
+  /* 动作按钮 */
+  .acts{display:flex;gap:9px;margin:13px 0}
+  .act{
+    flex:1;border:0;border-radius:12px;padding:13px 0;font-size:16.5px;font-weight:600;
+    font-family:inherit;color:#fff;letter-spacing:.5px;
+  }
+  /* 现状（固定，不随方案切换） */
+  .act.read-now{background:var(--purple)}
+  .act.write-now{background:var(--blue)}
+  .act.method-now{background:rgba(120,120,128,.35)}
+
+  /* 改进后：由 body[data-btn] 驱动，可在顶部切换方案 */
+  .acts .rd,.acts .wr,.acts .mt{background:var(--blue)}
+  body[data-btn="B"] .acts .mt{background:var(--blue)}                 /* B 全蓝 */
+  body[data-btn="C"] .acts .mt{                                        /* C 两实心 + 一描边 */
+    background:#fff;color:var(--blue);border:1.6px solid var(--blue);padding:11.4px 0;
+  }
+  body[data-btn="D"] .acts .wr,                                        /* D 按"是否会动表"着色 */
+  body[data-btn="D"] .acts .mt{background:var(--orange)}
+  body[data-btn="E"] .acts .rd::before{content:"↓ "}                   /* E 同色 + 图标 */
+  body[data-btn="E"] .acts .wr::before{content:"↑ "}
+  body[data-btn="E"] .acts .mt::before{content:"⚡ "}
+
+  /* F/G/H/I/J：保留原方案「读=紫 / 写=蓝」，只换「执行」那一颗 */
+  body[data-btn="F"] .acts .rd, body[data-btn="G"] .acts .rd, body[data-btn="H"] .acts .rd,
+  body[data-btn="I"] .acts .rd, body[data-btn="J"] .acts .rd{background:var(--purple)}
+  body[data-btn="F"] .acts .wr, body[data-btn="G"] .acts .wr, body[data-btn="H"] .acts .wr,
+  body[data-btn="I"] .acts .wr, body[data-btn="J"] .acts .wr{background:var(--blue)}
+  body[data-btn="F"] .acts .mt{background:var(--orange)}               /* F 执行=橙 */
+  body[data-btn="G"] .acts .mt{background:var(--teal)}                 /* G 执行=青 */
+  body[data-btn="H"] .acts .mt{background:var(--red)}                  /* H 执行=红 */
+  body[data-btn="I"] .acts .mt{background:#8e8e93}                     /* I 执行=中灰（不再像禁用） */
+  body[data-btn="J"] .acts .mt{background:rgba(120,120,128,.35)}       /* J 执行=原样（对照用） */
+
+  /* 状态栏（App 内） */
+  .statebar{display:flex;align-items:center;gap:7px;margin-bottom:12px;min-height:20px}
+  .statebar .dot{width:9px;height:9px;border-radius:99px;background:var(--green);flex:0 0 9px}
+  .statebar .txt{font-size:13.5px;color:var(--label2)}
+  .statebar .txt b{color:var(--label);font-weight:600}
+  .statebar .txt .tm{color:var(--label3)}
+
+  /* 分段控件 */
+  .seg{display:flex;background:rgba(120,120,128,.12);border-radius:9px;padding:2px;margin-bottom:9px}
+  .seg > div{flex:1;text-align:center;padding:6px 0;font-size:13.5px;border-radius:7px;cursor:pointer;color:var(--label)}
+  .seg > div.on{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);font-weight:600}
+
+  /* 面板 header */
+  .phead{display:flex;align-items:center;gap:8px;margin-bottom:8px;min-height:26px}
+  .phead .sp{flex:1}
+  .psw{display:flex;align-items:center;gap:6px}
+  .switch{width:51px;height:31px;border-radius:99px;background:var(--green);position:relative;cursor:pointer;flex:0 0 51px}
+  .switch.off{background:rgba(120,120,128,.32)}
+  .switch::after{content:"";position:absolute;top:2px;right:2px;width:27px;height:27px;border-radius:99px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .switch.off::after{right:auto;left:2px}
+  .phead .lab{font-size:11.5px;color:var(--label3)}
+  .link{color:var(--blue);font-size:12.5px;background:none;border:0;font-family:inherit;padding:0;cursor:pointer}
+  .trash{color:var(--blue);font-size:12.5px;background:none;border:0;font-family:inherit;padding:0;cursor:pointer}
+
+  /* 面板内容 */
+  .panel{background:rgba(120,120,128,.08);border-radius:10px;padding:9px;overflow:hidden}
+  .pitem{background:rgba(120,120,128,.1);border-radius:8px;padding:8px;margin-bottom:8px}
+  .pitem:last-child{margin-bottom:0}
+  .pitem .l1{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--label);line-height:1.45;word-break:break-all}
+  .pitem .l2{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--label2);line-height:1.45}
+
+  /* 报文行 */
+  .log{margin-bottom:3px}
+  .log .top{display:flex;gap:6px;align-items:center;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .log .tm{color:var(--label3);width:74px;flex:0 0 74px}
+  .log .dir{width:26px;flex:0 0 26px}
+  .log .dir.tx{color:var(--green)}
+  .log .dir.rx{color:var(--blue)}
+  .log .ty{width:92px;flex:0 0 92px;color:var(--label2)}
+  .log .hex{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--label);word-break:break-all;line-height:1.42}
+  .log .hex.tx{color:var(--green)}
+  .log .hex.rx{color:var(--blue)}
+  .ilog{width:13px;height:13px;border-radius:99px;border:1.2px solid var(--label3);color:var(--label3);
+       font-size:9.5px;display:inline-flex;align-items:center;justify-content:center;font-weight:700;
+       font-style:normal;flex:0 0 13px;line-height:1}
+
+  /* 列表（OBIS） */
+  .lrow{display:flex;align-items:center;gap:10px;padding:0 15px 0 15px;border-top:1px solid var(--sep);position:relative}
+  .lrow:first-child{border-top:0}
+  .lrow .txt{flex:1;min-width:0}
+  .lrow .n1{font-size:16.5px;color:var(--label);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lrow .n2{font-size:12.5px;color:var(--label2);font-family:ui-monospace,Consolas,monospace;margin-top:1px}
+  .lrow .n3{font-size:11.5px;color:var(--label3);font-family:ui-monospace,Consolas,monospace;margin-top:1px}
+  .lrow .pen{color:var(--blue);font-size:17px;background:none;border:0;padding:4px 0 4px 10px;cursor:pointer}
+  .lrow .cp{color:var(--blue);font-size:15px;background:none;border:0;padding:4px 0 4px 6px;cursor:pointer}
+
+  .searchbar{display:flex;align-items:center;gap:7px;background:rgba(120,120,128,.12);border-radius:9px;padding:7px 10px;margin:0 15px 8px}
+  .searchbar input{border:0;background:none;outline:none;font-size:16px;font-family:inherit;flex:1;color:var(--label)}
+  .searchbar input::placeholder{color:var(--label3)}
+  .searchbar .ic{color:var(--label3);font-size:13px}
+
+  /* 表单（编辑器） */
+  .frow{padding:9px 15px;border-top:1px solid var(--sep)}
+  .frow:first-child{border-top:0}
+  .frow .flabel{font-size:12px;font-weight:600;color:var(--label2);margin-bottom:4px;display:flex;gap:5px;align-items:center}
+  .frow input{border:0;background:none;outline:none;font-size:16.5px;font-family:inherit;width:100%;color:var(--label);padding:0}
+  .frow input::placeholder{color:var(--label3)}
+  .frow input.mono{font-family:ui-monospace,Consolas,monospace}
+
+  /* 底部标签栏 */
+  .tabbar{
+    flex:0 0 auto;border-top:1px solid var(--sep);background:rgba(249,249,249,.94);
+    display:flex;padding:7px 0 20px;
+  }
+  .tabbar .t{flex:1;text-align:center;font-size:10.5px;color:var(--label2)}
+  .tabbar .t.on{color:var(--blue)}
+  .tabbar .t .ic{font-size:19px;display:block;line-height:1.25}
+  .homebar{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:134px;height:5px;border-radius:99px;background:rgba(0,0,0,.85);z-index:6}
+
+  /* 标注徽章 */
+  .badge{
+    position:absolute;top:-7px;right:-7px;min-width:19px;height:19px;border-radius:99px;
+    background:#ff3b30;color:#fff;font-size:11px;font-weight:700;display:flex;
+    align-items:center;justify-content:center;z-index:20;padding:0 5px;
+    box-shadow:0 1px 4px rgba(0,0,0,.28);font-family:-apple-system,system-ui,sans-serif;
+  }
+  .badge.dim{background:#8e8e93}
+  .marked{position:relative}
+  body.nomarks .badge{display:none}
+
+  /* ── 按钮方案切换器 ───────────────────── */
+  .vgroup{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .vgroup .vl{font-size:13.5px;color:var(--label2);margin-right:2px}
+  .vbtn{
+    padding:5px 11px;border-radius:99px;border:1px solid var(--sep);background:#fff;
+    font-size:12.5px;font-family:inherit;cursor:pointer;color:var(--label2);transition:.15s;
+  }
+  .vbtn:hover{border-color:var(--blue);color:var(--blue)}
+  .vbtn.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+
+  /* ── 按钮方案对比卡 ───────────────────── */
+  .vsec{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:26px 0 14px;padding-bottom:9px;border-bottom:2px solid var(--sep)}
+  .vsec b{font-size:16px}
+  .vsec span{font-size:13px;color:var(--label2)}
+  .vwrap{display:grid;grid-template-columns:repeat(auto-fit,minmax(370px,1fr));gap:16px}
+  .vcard{background:#fff;border:1px solid var(--sep);border-radius:14px;overflow:hidden}
+  .vcard.rec{border-color:var(--green);box-shadow:0 0 0 2px rgba(52,199,89,.18)}
+  .vcard .vh{padding:12px 16px;border-bottom:1px solid var(--sep);font-size:14px;display:flex;align-items:center;gap:7px}
+  .vcard .vh b{font-size:14.5px}
+  .vcard .vrow{width:358px;margin:16px auto 2px;display:flex;gap:9px}
+  .vprev{width:358px;margin:16px auto 2px;background:var(--bg);border-radius:12px;padding:13px}
+  .vprev .row2{margin-bottom:9px}
+  .vprev .hintline{margin:5px 1px 0}
+  .vnote{font-size:11.5px;color:var(--label3);text-align:center;margin:9px auto 0;width:358px;line-height:1.4}
+  .vcard .vp{padding:4px 16px 15px;font-size:12.5px;color:var(--label2);line-height:1.55}
+  .vcard .vp div{margin-top:6px;display:flex;gap:6px}
+  .vcard .vp .y{color:#1a7d3c;flex:0 0 auto;font-weight:700}
+  .vcard .vp .n{color:#c1121f;flex:0 0 auto;font-weight:700}
+  .vcard .vp .m{flex:0 0 auto;color:var(--label3);font-weight:700}
+
+  /* 改动清单 */
+  .clist{margin-top:44px;background:#fff;border:1px solid var(--sep);border-radius:14px;overflow:hidden}
+  .clist h2{font-size:16px;margin:0;padding:15px 18px;border-bottom:1px solid var(--sep)}
+  .clist .note{padding:11px 18px;background:rgba(255,149,0,.07);font-size:12.5px;color:#8a5a00;border-bottom:1px solid var(--sep)}
+  .clist table{width:100%;border-collapse:collapse;font-size:13.5px}
+  .clist th{text-align:left;font-weight:600;color:var(--label2);font-size:12px;letter-spacing:.4px;
+            padding:10px 18px;border-bottom:1px solid var(--sep);background:rgba(120,120,128,.05)}
+  .clist td{padding:10px 18px;border-bottom:1px solid var(--sep);vertical-align:top}
+  .clist tr:last-child td{border-bottom:0}
+  .clist td.n{width:44px;font-weight:700;color:#ff3b30}
+  .clist td.n.dim{color:#8e8e93}
+  .clist td.c{color:var(--label2)}
+  .pill{display:inline-block;font-size:11px;padding:1.5px 7px;border-radius:99px;font-weight:600;
+        background:rgba(120,120,128,.14);color:var(--label2);white-space:nowrap}
+  .pill.p0{background:rgba(255,59,48,.12);color:#c1121f}
+  .pill.p1{background:rgba(0,122,255,.12);color:#0055b3}
+  .pill.new{background:rgba(52,199,89,.15);color:#1a7d3c}
+
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:14px 0 0;font-size:12.5px;color:var(--label2)}
+  .legend span{display:flex;align-items:center;gap:6px}
+</style>
+</head>
+<body data-btn="F">
+<div class="wrap">
+
+  <h1>DLMS 调试台 · UI 改进原型</h1>
+  <p class="sub">依据《UI 评审报告》的<strong>核实结论</strong>制作 —— 已剔除报告中判错的 3 处、夸大的 1 处，并补入报告漏掉的 3 处。</p>
+  <p class="sub">每屏左为<strong>现状</strong>（按真机截图还原）、右为<strong>改进后</strong>；红圈数字对应下方清单。<code>E1 密钥遮罩</code>按你的要求<strong>不做</strong>。</p>
+
+  <div class="toolbar">
+    <label><input type="checkbox" id="cbBefore" checked> 显示「现状」对照</label>
+    <label><input type="checkbox" id="cbMarks" checked> 显示改动标注</label>
+    <span class="sp"></span>
+    <span class="hint">可交互：分段控件 / 开关 / 搜索框 / 按钮均可点</span>
+    <div style="flex:0 0 100%;height:1px;background:var(--sep);margin:2px 0"></div>
+    <div class="vgroup">
+      <span class="vl">统一主色：</span>
+      <button class="vbtn" data-v="B">B 三个都蓝</button>
+      <button class="vbtn" data-v="C">C 两实心 + 一描边</button>
+      <button class="vbtn" data-v="D">D 读蓝 · 写/执行橙</button>
+      <button class="vbtn" data-v="E">E 同色 + 图标</button>
+    </div>
+    <div class="vgroup" style="flex:0 0 100%;margin-top:7px">
+      <span class="vl">保留原三色（读＝紫 / 写＝蓝），只换「执行」：</span>
+      <button class="vbtn" data-v="J">灰（＝原样）</button>
+      <button class="vbtn on" data-v="F">橙</button>
+      <button class="vbtn" data-v="G">青</button>
+      <button class="vbtn" data-v="H">红</button>
+      <button class="vbtn" data-v="I">中灰</button>
+      <span class="hint">← 切换后主界面 ①② 实时变化；逐项对比见标签 ⑥</span>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <div class="tab on" data-s="s1">① 主界面 · 解析</div>
+    <div class="tab" data-s="s2">② 主界面 · 报文</div>
+    <div class="tab" data-s="s3">③ 连接参数</div>
+    <div class="tab" data-s="s4">④ OBIS 清单</div>
+    <div class="tab" data-s="s5">⑤ 添加 / 编辑 OBIS</div>
+    <div class="tab" data-s="s6">⑥ 按钮配色对比</div>
+    <div class="tab" data-s="s7">⑦ 输入提示位置</div>
+  </div>
+
+  <!-- ═══════════════ ① 主界面 · 解析 ═══════════════ -->
+  <div class="stage on" id="s1">
+    <div class="pair">
+      <div class="col before-col">
+        <p class="cap before"><span class="dot"></span>现状</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav"><span class="big">DLMS 调试台</span><span class="gear">⚙︎</span></div>
+          <div class="body">
+            <div class="sumcard">
+              <div class="sum-top"><span class="sum-ip">192.168.5.5 : 4059</span><button class="btn-test">↓ 连接测试</button></div>
+              <div class="sum-sub"><span class="a">HDLC 客户端 01 通信 00013FFF</span><span class="sp"></span><span class="b">v1.2 (3)</span></div>
+            </div>
+
+            <div class="row2">
+              <input class="bare-field" value="1">
+              <input class="bare-field" style="width:64px;flex:0 0 64px;text-align:center" value="2">
+            </div>
+            <div class="row2">
+              <input class="bare-field" style="font-family:ui-monospace,Consolas,monospace" value="0.0.96.1.0.255">
+              <span style="color:var(--blue);font-size:19px">◉</span>
+            </div>
+            <div class="hintline">ⓘ 6 段已识别</div>
+
+            <input class="bare-field" placeholder="请求数据（HEX，e.g. 11 01）" style="font-family:ui-monospace,Consolas,monospace">
+            <div class="hintline">ⓘ 写/执行用的 HEX（如 11 01）；留空 = 无参数。选 OBIS 时会按清单自动填入</div>
+
+            <div class="acts">
+              <button class="act read-now">读</button>
+              <button class="act write-now">写</button>
+              <button class="act method-now">执行</button>
+            </div>
+
+            <div class="statebar"><span class="dot"></span><span class="txt">完成</span></div>
+
+            <div class="seg"><div class="on">解析</div><div>报文</div></div>
+            <div class="phead">
+              <span class="psw"><span class="switch"></span><span class="lab">解析使能</span></span>
+              <span class="link">⤢ 满屏</span>
+              <span class="sp"></span>
+              <button class="trash">🗑 清空</button>
+            </div>
+            <div class="panel" style="height:260px">
+              <div class="pitem"><div class="l1">09 04 47 52 58 33</div><div class="l2">-&gt; Type: octet-string, Length: 4, Value: GRX3</div></div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t on"><span class="ic">▣</span>调试台</div>
+            <div class="t"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+
+      <div class="col after-col">
+        <p class="cap after"><span class="dot"></span>改进后</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav"><span class="big">DLMS 调试台</span><span class="gear">⚙︎</span></div>
+          <div class="body">
+            <div class="sumcard">
+              <div class="sum-top"><span class="sum-ip">192.168.5.5 : 4059</span><button class="btn-test">↓ 连接测试</button></div>
+              <div class="sum-sub"><span class="a">HDLC 客户端 01 通信 00013FFF</span><span class="sp"></span><span class="b">v1.2 (3)</span></div>
+            </div>
+
+            <div class="row2" style="align-items:flex-start">
+              <div class="labeled marked" style="flex:1">
+                <span class="badge">1</span>
+                <span class="flabel">接口类</span>
+                <input class="fbox" value="1">
+              </div>
+              <div class="labeled marked" style="flex:0 0 78px">
+                <span class="badge">1</span>
+                <span class="flabel">属性</span>
+                <input class="fbox" style="text-align:center" value="2">
+              </div>
+            </div>
+            <div class="row2" style="align-items:flex-start;margin-top:4px">
+              <div class="labeled marked" style="flex:1">
+                <span class="badge">2</span>
+                <span class="flabel">逻辑名 OBIS<span class="fstat">ⓘ 6 段已识别</span></span>
+                <input class="fbox mono" value="0.0.96.1.0.255">
+              </div>
+              <span style="color:var(--blue);font-size:19px;margin-top:22px">◉</span>
+            </div>
+
+            <div class="labeled marked" style="margin-bottom:0">
+              <span class="badge">3</span>
+              <span class="flabel">请求数据<span class="fstat">ⓘ 写/执行用 · 留空 = 无参数</span></span>
+              <input class="fbox mono" placeholder="HEX，如 11 01（选 OBIS 自动填入）">
+            </div>
+
+            <div class="acts marked">
+              <span class="badge">5</span>
+              <button class="act rd">读</button>
+              <button class="act wr">写</button>
+              <button class="act mt">执行</button>
+            </div>
+
+            <div class="statebar marked">
+              <span class="badge">4</span>
+              <span class="dot"></span>
+              <span class="txt"><b>完成</b> <span class="tm">· 10:35:08 ·</span> 设备ID = <b>GRX3</b></span>
+            </div>
+
+            <div class="seg"><div class="on">解析</div><div>报文</div></div>
+            <div class="phead">
+              <span class="psw"><span class="switch"></span><span class="lab">解析使能</span></span>
+              <span class="link">⤢ 满屏</span>
+              <span class="sp"></span>
+              <button class="trash">🗑 清空</button>
+            </div>
+            <div class="panel marked" style="height:340px">
+              <span class="badge">6</span>
+              <div class="pitem"><div class="l1">09 04 47 52 58 33</div><div class="l2">-&gt; Type: octet-string, Length: 4, Value: GRX3</div></div>
+              <div class="pitem"><div class="l1">0C 0A 31 32 33 34 35 36 37 38 39 30</div><div class="l2">-&gt; Type: visible-string, Length: 10, Value: 1234567890</div></div>
+              <div class="pitem"><div class="l1">06 00 00 00 00 01 23 45</div><div class="l2">-&gt; Type: unsigned, Value: 74565</div></div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t on"><span class="ic">▣</span>调试台</div>
+            <div class="t"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ② 主界面 · 报文 ═══════════════ -->
+  <div class="stage" id="s2">
+    <div class="pair">
+      <div class="col before-col">
+        <p class="cap before"><span class="dot"></span>现状</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:100%"></i></span></span></div>
+          <div class="nav"><span class="big">DLMS 调试台</span><span class="gear">⚙︎</span></div>
+          <div class="body">
+            <div class="sumcard">
+              <div class="sum-top"><span class="sum-ip">192.168.5.5 : 4059</span><button class="btn-test">↓ 连接测试</button></div>
+              <div class="sum-sub"><span class="a">HDLC 客户端 01 通信 00013FFF</span><span class="sp"></span><span class="b">v1.2 (3)</span></div>
+            </div>
+            <div class="row2">
+              <input class="bare-field" value="1">
+              <input class="bare-field" style="width:64px;flex:0 0 64px;text-align:center" value="2">
+            </div>
+            <div class="row2">
+              <input class="bare-field" style="font-family:ui-monospace,Consolas,monospace" value="0.0.96.1.0.255">
+              <span style="color:var(--blue);font-size:19px">◉</span>
+            </div>
+            <div class="hintline">ⓘ 6 段已识别</div>
+            <input class="bare-field" placeholder="请求数据（HEX，e.g. 11 01）" style="font-family:ui-monospace,Consolas,monospace">
+            <div class="hintline">ⓘ 写/执行用的 HEX（如 11 01）；留空 = 无参数。选 OBIS 时会按清单自动填入</div>
+            <div class="acts">
+              <button class="act read-now">读</button>
+              <button class="act write-now">写</button>
+              <button class="act method-now">执行</button>
+            </div>
+            <div class="statebar"><span class="dot"></span><span class="txt">完成</span></div>
+            <div class="seg"><div>解析</div><div class="on">报文</div></div>
+            <div class="phead">
+              <span class="lab">共 13 条</span>
+              <span class="link">⤢ 满屏</span>
+              <span class="sp"></span>
+              <button class="trash">🗑 清空</button>
+            </div>
+            <div class="panel" style="height:260px">
+              <div class="log"><div class="top"><span class="tm">10:35:06.372</span><span class="dir tx">TX</span><span class="ty">RLRQ</span></div><div class="hex tx">7E A0 39 00 02 FE FF 03 76 D9 5C E6 E6 00 62 28 80 01 00 BE 23 04 21 21 1F 30 00 00 00 05 E3 71 E1 64 47 B7 AB 79 8F 31 26 7E</div></div>
+              <div class="log" style="margin-top:5px"><div class="top"><span class="tm">10:35:06.380</span><span class="dir rx">RX</span><span class="ty">RLRE</span></div><div class="hex rx">7E A0 03 00 02 FE FF 96 49 CE E6 E7 00 63 24 80 01 00 BE 22 04 21 28 1F 30 00 00 00 04 76 F0 0A D8 97 1C 8C C6 D7 5F 33 8B 81 6E 7E</div></div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t on"><span class="ic">▣</span>调试台</div>
+            <div class="t"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+
+      <div class="col after-col">
+        <p class="cap after"><span class="dot"></span>改进后</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:100%"></i></span></span></div>
+          <div class="nav"><span class="big">DLMS 调试台</span><span class="gear">⚙︎</span></div>
+          <div class="body">
+            <div class="sumcard">
+              <div class="sum-top"><span class="sum-ip">192.168.5.5 : 4059</span><button class="btn-test">↓ 连接测试</button></div>
+              <div class="sum-sub"><span class="a">HDLC 客户端 01 通信 00013FFF</span><span class="sp"></span><span class="b">v1.2 (3)</span></div>
+            </div>
+            <div class="row2" style="align-items:flex-start">
+              <div class="labeled" style="flex:1"><span class="flabel">接口类</span><input class="fbox" value="1"></div>
+              <div class="labeled" style="flex:0 0 78px"><span class="flabel">属性</span><input class="fbox" style="text-align:center" value="2"></div>
+            </div>
+            <div class="row2" style="align-items:flex-start;margin-top:4px">
+              <div class="labeled" style="flex:1"><span class="flabel">逻辑名 OBIS<span class="fstat">ⓘ 6 段已识别</span></span><input class="fbox mono" value="0.0.96.1.0.255"></div>
+              <span style="color:var(--blue);font-size:19px;margin-top:22px">◉</span>
+            </div>
+            <div class="labeled"><span class="flabel">请求数据<span class="fstat">ⓘ 写/执行用 · 留空 = 无参数</span></span><input class="fbox mono" placeholder="HEX，如 11 01（选 OBIS 自动填入）"></div>
+            <div class="acts">
+              <button class="act rd">读</button>
+              <button class="act wr">写</button>
+              <button class="act mt">执行</button>
+            </div>
+            <div class="statebar"><span class="dot"></span><span class="txt"><b>完成</b> <span class="tm">· 10:35:08 ·</span> 设备ID = <b>GRX3</b></span></div>
+            <div class="seg"><div>解析</div><div class="on">报文</div></div>
+            <div class="phead">
+              <span class="lab">共 13 条</span>
+              <span class="link">⤢ 满屏</span>
+              <span class="sp"></span>
+              <button class="trash">🗑 清空</button>
+            </div>
+            <div class="panel marked" style="height:340px">
+              <span class="badge">6</span>
+              <div class="log">
+                <div class="top marked"><span class="badge">7</span><span class="tm">10:35:06.372</span><span class="dir tx">TX</span><span class="ty" style="display:flex;align-items:center;gap:4px">RLRQ <i class="ilog" title="启发式识别，可能误标 · R20">i</i></span></div>
+                <div class="hex tx">7E A0 39 00 02 FE FF 03 76 D9 5C E6 E6 00 62 28 80 01 00 BE 23 04 21 21 1F 30 00 00 00 05 E3 71 E1 64 47 B7 AB 79 8F 31 26 7E</div>
+              </div>
+              <div class="log" style="margin-top:7px">
+                <div class="top"><span class="tm">10:35:06.380</span><span class="dir rx">RX</span><span class="ty" style="display:flex;align-items:center;gap:4px">RLRE <i class="ilog">i</i></span></div>
+                <div class="hex rx">7E A0 03 00 02 FE FF 96 49 CE E6 E7 00 63 24 80 01 00 BE 22 04 21 28 1F 30 00 00 00 04 76 F0 0A D8 97 1C 8C C6 D7 5F 33 8B 81 6E 7E</div>
+              </div>
+              <div class="log" style="margin-top:7px">
+                <div class="top"><span class="tm">10:35:07.104</span><span class="dir rx">RX</span><span class="ty" style="display:flex;align-items:center;gap:4px">Get-Response <i class="ilog">i</i></span></div>
+                <div class="hex rx">7E A0 2C 03 00 02 FE FF 14 3F 41 E6 E6 00 C8 18 30 00 00 00 03 0A D6 84 49 7E 2B 0D 86 17 9E 7E 79 81 D3 46 8A 5D F8 BA 44 71 C7 C6 65 7E</div>
+              </div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t on"><span class="ic">▣</span>调试台</div>
+            <div class="t"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ③ 连接参数 ═══════════════ -->
+  <div class="stage" id="s3">
+    <div class="pair">
+      <div class="col before-col">
+        <p class="cap before"><span class="dot"></span>现状（已滚到认证区域）</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:100%"></i></span></span></div>
+          <div class="nav"><span class="center">连接参数</span><button class="navbtn">完成</button></div>
+          <div class="body form">
+            <div class="stub">⌃　传输 · 地址·封装（此行以上已滚过）</div>
+            <div class="sec-title" style="padding:12px 20px 6px">认证（独立项）</div>
+            <div class="card"><div class="row"><span class="k">认证方式</span><span class="sp"></span><span class="v">HLS-GMAC ⇅</span></div></div>
+            <div class="sec-title" style="padding:18px 20px 6px">信息加密（独立项）</div>
+            <div class="card"><div class="row"><span class="k">信息加密</span><span class="sp"></span><span class="v">认证加密 ⇅</span></div></div>
+            <div class="sec-title" style="padding:18px 20px 6px">密钥 · SystemTitle（独立，常显）</div>
+            <div class="card" style="padding:10px 15px">
+              <div class="row" style="padding:0;border:0"><span class="k" style="font-size:16px">LLS 密码</span><span class="sp"></span><span class="v mono">00000000</span></div>
+            </div>
+            <div class="sec-title" style="padding:18px 20px 6px">解析使能</div>
+            <div class="card"><div class="row"><span class="k">解析使能</span><span class="sp"></span><span class="switch" style="flex:0 0 51px"></span></div></div>
+            <div class="clippednote">
+              两个独立 Section 被拆开：<b>认证</b> 与<b>信息加密</b>各占一节，
+              中间隔着章节标题；参数页底部<b>又有一个「解析使能」</b>，与解析面板重复。
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="col after-col">
+        <p class="cap after"><span class="dot"></span>改进后（同一滚动位置）</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:100%"></i></span></span></div>
+          <div class="nav"><span class="center">连接参数</span><button class="navbtn">完成</button></div>
+          <div class="body form">
+            <div class="stub">⌃　传输 · 地址·封装（未改动，此行以上已滚过）</div>
+            <div class="sec-title" style="padding:12px 20px 6px">安全</div>
+            <div class="card marked">
+              <span class="badge">8</span>
+              <div class="row"><span class="k">认证方式</span><span class="sp"></span><span class="v">HLS-GMAC ⇅</span></div>
+              <div class="row"><span class="k">信息加密</span><span class="sp"></span><span class="v">认证加密 ⇅</span></div>
+            </div>
+            <div class="sec-foot" style="padding:6px 20px 0">
+              <strong>两者独立配置、互不影响</strong>：认证默认 HLS-GMAC，信息加密默认 NONE；HLS-GMAC 时客户端 SystemTitle 必填（R13）。
+            </div>
+
+            <div class="sec-title" style="padding:18px 20px 6px">密钥 · SystemTitle（独立，常显）</div>
+            <div class="card" style="padding:10px 15px">
+              <div class="row" style="padding:0;border:0"><span class="k" style="font-size:16px">LLS 密码</span><span class="sp"></span><span class="v mono">00000000</span></div>
+            </div>
+
+            <div class="oknote marked">
+              <span class="badge">9</span>
+              「解析使能」已从本页移除 —— 它属于<b>解析面板的 header</b>（主界面 · 解析），与本页连接参数无关；设置仍持久化。
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ④ OBIS 清单 ═══════════════ -->
+  <div class="stage" id="s4">
+    <div class="pair">
+      <div class="col before-col">
+        <p class="cap before"><span class="dot"></span>现状</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav" style="align-items:flex-end"><span class="big">OBIS 清单</span><span style="color:var(--blue);font-size:18px">✦　⬇　＋</span></div>
+          <div class="body form">
+            <div class="card" style="margin-top:6px">
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">逻辑设备名 · 0.0.42.0.0.255</div><div class="n2">0.0.42.0.0.255</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">正向有功总电量 · 1.0.1.8.0.255</div><div class="n2">1.0.1.8.0.255 · kWh</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">反向有功总电量 · 1.0.2.8.0.255</div><div class="n2">1.0.2.8.0.255 · kWh</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">当前功率 · 1.0.1.7.0.255</div><div class="n2">1.0.1.7.0.255 · kW</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">电压L1 · 1.0.32.7.0.255</div><div class="n2">1.0.32.7.0.255 · V</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">电流L1 · 1.0.31.7.0.255</div><div class="n2">1.0.31.7.0.255 · A</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">设备ID · 0.0.96.1.0.255</div><div class="n2">0.0.96.1.0.255</div></div><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:60px"><div class="txt"><div class="n1">进厂 · 0.0.202.8.0.255</div><div class="n2">0.0.202.8.0.255</div><div class="n3">→ 12F001</div></div><button class="pen">✎</button></div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t"><span class="ic">▣</span>调试台</div>
+            <div class="t on"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+
+      <div class="col after-col">
+        <p class="cap after"><span class="dot"></span>改进后</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav" style="align-items:flex-end"><span class="big">OBIS 清单</span><span style="color:var(--blue);font-size:18px">✦　⬇　＋</span></div>
+          <div class="body form">
+            <div class="searchbar marked" style="margin-top:6px">
+              <span class="badge">11</span>
+              <span class="ic">🔍</span>
+              <input placeholder="搜索名称或 OBIS 代码">
+            </div>
+            <div class="card">
+              <div class="lrow marked" style="min-height:68px">
+                <span class="badge">10</span><span class="badge" style="top:auto;bottom:8px;right:26px;background:#8e8e93">12</span>
+                <div class="txt"><div class="n1">逻辑设备名</div><div class="n2">0.0.42.0.0.255</div></div>
+                <button class="cp" title="复制">⧉</button><button class="pen">✎</button>
+              </div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">正向有功总电量</div><div class="n2">1.0.1.8.0.255 · kWh</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">反向有功总电量</div><div class="n2">1.0.2.8.0.255 · kWh</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">当前功率</div><div class="n2">1.0.1.7.0.255 · kW</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">电压L1</div><div class="n2">1.0.32.7.0.255 · V</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">电流L1</div><div class="n2">1.0.31.7.0.255 · A</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">设备ID</div><div class="n2">0.0.96.1.0.255</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+              <div class="lrow" style="min-height:68px"><div class="txt"><div class="n1">进厂</div><div class="n2">0.0.202.8.0.255</div><div class="n3">→ 12F001</div></div><button class="cp">⧉</button><button class="pen">✎</button></div>
+            </div>
+          </div>
+          <div class="tabbar">
+            <div class="t"><span class="ic">▣</span>调试台</div>
+            <div class="t on"><span class="ic">☰</span>OBIS</div>
+          </div>
+          <div class="homebar"></div>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ⑤ 添加 / 编辑 OBIS ═══════════════ -->
+  <div class="stage" id="s5">
+    <div class="pair">
+      <div class="col before-col">
+        <p class="cap before"><span class="dot"></span>现状</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav"><button class="navbtn">取消</button><span class="center" style="font-size:17px">添加 OBIS</span><button class="navbtn" style="font-weight:600">保存</button></div>
+          <div class="body form">
+            <div class="sec-title" style="padding:8px 20px 6px">基本信息</div>
+            <div class="card">
+              <div class="frow"><input placeholder="名称"></div>
+              <div class="frow"><input value="1"></div>
+              <div class="frow"><input class="mono" value="0.0.1.0.0.255"></div>
+              <div class="frow"><input value="2"></div>
+              <div class="frow"><input placeholder="单位（可选）"></div>
+              <div class="frow"><input placeholder="量纲/倍率（可选）"></div>
+            </div>
+            <div class="sec-title" style="padding:18px 20px 6px">请求数据（可选）</div>
+            <div class="card"><div class="frow"><input class="mono" placeholder="如 11 01"></div></div>
+            <div class="sec-foot" style="padding:6px 20px 0">Set / Action 的固定参数（HEX）。选中本条目时会自动填入主界面的「请求数据」，免去每次手输。留空 = 无参数。</div>
+          </div>
+        </div></div></div>
+      </div>
+
+      <div class="col after-col">
+        <p class="cap after"><span class="dot"></span>改进后</p>
+        <div class="scaler"><div class="phone"><div class="screen">
+          <div class="island"></div>
+          <div class="statusbar"><span>10:35</span><span class="sb-right"><span class="bars"><i></i><i></i><i></i><i></i></span><span class="batt"><i style="width:99%"></i></span></span></div>
+          <div class="nav"><button class="navbtn">取消</button><span class="center" style="font-size:17px">添加 OBIS</span><button class="navbtn" style="font-weight:600">保存</button></div>
+          <div class="body form">
+            <div class="sec-title" style="padding:8px 20px 6px">基本信息</div>
+            <div class="card">
+              <div class="frow marked">
+                <span class="badge">13</span>
+                <div class="flabel">名称</div>
+                <input placeholder="如 正向有功总电量">
+              </div>
+              <div class="frow marked">
+                <span class="badge">13</span>
+                <div class="flabel">接口类 <span style="font-weight:400;color:var(--label3)">IC</span></div>
+                <input placeholder="如 1（Data）/ 3（Register）/ 42（SAP Assignment）">
+              </div>
+              <div class="frow marked">
+                <span class="badge">13</span>
+                <div class="flabel">逻辑名 OBIS</div>
+                <input class="mono" placeholder="如 1.0.1.8.0.255">
+              </div>
+              <div class="frow marked">
+                <span class="badge">13</span>
+                <div class="flabel">属性 / 方法</div>
+                <input placeholder="如 2（读值）">
+              </div>
+              <div class="frow"><div class="flabel" style="font-weight:400;color:var(--label2)">单位（可选）</div><input placeholder="如 kWh"></div>
+              <div class="frow"><div class="flabel" style="font-weight:400;color:var(--label2)">量纲 / 倍率（可选）</div><input placeholder="如 -1"></div>
+            </div>
+            <div class="sec-title" style="padding:18px 20px 6px">请求数据（可选）</div>
+            <div class="card"><div class="frow"><input class="mono" placeholder="如 11 01"></div></div>
+            <div class="sec-foot" style="padding:6px 20px 0">
+              Set / Action 的固定参数（HEX）。选中本条目时会自动填入主界面的「请求数据」。留空 = 无参数。
+            </div>
+            <div style="margin:14px 20px 0;padding:11px 13px;background:rgba(255,149,0,.09);border-radius:9px;font-size:12.5px;color:#8a5a00;line-height:1.45" class="marked">
+              <span class="badge">14</span>
+              <strong>不再预填默认值</strong>：原来「接口类」预填 <code>1</code>、「属性」预填 <code>2</code>，
+              且保存时无条件采纳 → 新增 <code>0.0.42.x</code>（应为 42 类）会被静默存成 1 类，读错对象。
+              现在字段留空 + 常驻标签，必须看过再填。
+            </div>
+          </div>
+        </div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ⑥ 按钮配色对比 ═══════════════ -->
+  <div class="stage" id="s6">
+    <p class="sub" style="margin-bottom:6px">
+      <strong>第一组：保留原三色编码（读＝紫 / 写＝蓝），只换出问题的「执行」</strong><br>
+      <span style="color:var(--label3)">原设计"一个动作一个颜色"本身是成立的色彩编码 —— 坏的只有执行那颗（白字压 35% 灰 → 看起来像禁用）。
+      按钮均为实际尺寸；顶部切换器可把任一方案套到主界面 ①② 上看真实效果。</span>
+    </p>
+
+    <div class="vsec"><b>第一组</b><span>读＝紫 · 写＝蓝　—— 只换「执行」那一颗</span></div>
+
+    <div class="vwrap">
+
+      <div class="vcard">
+        <div class="vh"><b>现状</b><span class="pill">有问题</span></div>
+        <div class="vrow">
+          <button class="act" style="background:#af52de">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:rgba(120,120,128,.35)">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>读＝紫 / 写＝蓝 本身没问题 —— 「一个动作一个颜色」是成立的编码，保留</span></div>
+          <div><span class="n">✕</span><span><strong>执行＝白字压 35% 灰，对比度极低</strong> —— 它其实可以点，但看起来像禁用（评审报告正是被这点误导的）</span></div>
+        </div>
+      </div>
+
+      <div class="vcard rec">
+        <div class="vh"><b>F　执行＝橙</b><span class="pill new">这一组里最推荐</span></div>
+        <div class="vrow">
+          <button class="act" style="background:#af52de">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#ff9500">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>三色分明、执行清晰可读，<strong>改动最小</strong>（只动一颗按钮）</span></div>
+          <div><span class="y">✓</span><span>橙色顺带带出「会动表」的提示 —— 与你「不要确认框、但要防误触」的要求一致</span></div>
+          <div><span class="m">·</span><span>代价：全局多出一个橙色，与蓝/紫并列时画面稍热闹</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>G　执行＝青</b></div>
+        <div class="vrow">
+          <button class="act" style="background:#af52de">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#30b0c7">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>三色分明；青色中性，不带「警告」暗示，画面最和谐</span></div>
+          <div><span class="y">✓</span><span>也完全不与 App 既有的绿（成功/TX）冲突</span></div>
+          <div><span class="n">✕</span><span><strong>青与蓝在小屏、强光下容易看混</strong> —— 现场（地下室/表箱）恰好是这种环境</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>H　执行＝红</b></div>
+        <div class="vrow">
+          <button class="act" style="background:#af52de">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#ff3b30">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>语义最强：执行 = 调任意方法、最不可预期 → 红色最贴合</span></div>
+          <div><span class="y">✓</span><span>绝不会误认成禁用</span></div>
+          <div><span class="n">✕</span><span>红＝危险/删除，日常用得多的按钮一直红着，容易麻木、显得"每次都在报警"</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>I　执行＝中灰</b><span class="pill">保守</span></div>
+        <div class="vrow">
+          <button class="act" style="background:#af52de">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#8e8e93">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>沿用原方案的"第三色＝灰"思路，只把<strong>对比度修够</strong>（35% 灰 → 中灰 #8e8e93）</span></div>
+          <div><span class="y">✓</span><span>画面最克制，跟原设计观感最接近</span></div>
+          <div><span class="n">✕</span><span>灰色天生带「次要 / 不可用」的暗示 —— 只是从"像禁用"变成"像次要"，没根治</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="vsec"><b>第二组</b><span>统一主色系　—— 三个按钮共用一种色调，靠形状 / 图标区分</span></div>
+
+    <div class="vwrap">
+
+      <div class="vcard">
+        <div class="vh"><b>方案 B</b>　三个都实心蓝</div>
+        <div class="vrow">
+          <button class="act" style="background:#007aff">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#007aff">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>最简单、零解释成本、三颗一样好点</span></div>
+          <div><span class="y">✓</span><span>与「连接测试」按钮同色，全 App 一个主色</span></div>
+          <div><span class="n">✕</span><span>只读的「读」和<strong>会改表</strong>的「写/执行」长得一样，误触风险没降</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>方案 C</b>　两实心 + 一描边<span class="pill">当前原型</span></div>
+        <div class="vrow">
+          <button class="act" style="background:#007aff">读</button>
+          <button class="act" style="background:#007aff">写</button>
+          <button class="act" style="background:#fff;color:#007aff;border:1.6px solid #007aff;padding:11.4px 0">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>去掉了紫和伪灰，三颗都清晰可读</span></div>
+          <div><span class="y">✓</span><span>保留了原设计「有主次」的意图</span></div>
+          <div><span class="n">✕</span><span><strong>「执行」凭什么比另两个次要？没有理由</strong> —— 需要解释的设计在现场不是好设计</span></div>
+        </div>
+      </div>
+
+      <div class="vcard rec">
+        <div class="vh"><b>方案 D</b>　按「是否会动表」着色<span class="pill new">我推荐</span></div>
+        <div class="vrow">
+          <button class="act" style="background:#007aff">读</button>
+          <button class="act" style="background:#ff9500">写</button>
+          <button class="act" style="background:#ff9500">执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span><strong>颜色承载真实语义</strong>：蓝＝只读安全，橙＝会改表。一眼知道哪颗不能乱按</span></div>
+          <div><span class="y">✓</span><span>不靠二次确认也能防误触 —— 正合你「现场要快、不要确认框」的要求</span></div>
+          <div><span class="y">✓</span><span>去掉了紫，也不存在「为什么只有它不一样」的疑问：<strong>不一样 = 有副作用</strong></span></div>
+          <div><span class="m">·</span><span>代价：橙色通常带「警示」意味 —— 但对「写表」来说，这个警示是对的</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>方案 E</b>　同色 + 图标区分</div>
+        <div class="vrow">
+          <button class="act" style="background:#007aff">↓ 读</button>
+          <button class="act" style="background:#007aff">↑ 写</button>
+          <button class="act" style="background:#007aff">⚡ 执行</button>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>颜色完全统一，语义靠图标表达，也不需解释</span></div>
+          <div><span class="y">✓</span><span>图标天然提示「读下来 / 写上去 / 触发动作」</span></div>
+          <div><span class="n">✕</span><span>多一层视觉元素；按钮变宽，两字标签的紧凑感被破坏</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="clist" style="margin-top:26px">
+      <h2>我的建议</h2>
+      <div class="note" style="background:rgba(255,149,0,.08);color:#8a5a00">
+        <strong>第一组里首选 F（读紫 / 写蓝 / 执行橙）</strong> —— 你说得对，原方案的三色编码本身不用推翻，
+        坏的只有执行那颗。换成橙是<strong>改动最小、且顺带把「会动表」讲清楚</strong>的做法。次选 I（中灰），最保守。<br>
+        <span style="color:var(--label2)">G（青）不建议：现场强光/小屏下青与蓝容易看混。H（红）日常用会麻木。</span>
+      </div>
+      <div class="note" style="background:rgba(0,122,255,.07);color:#0055b3;border-top:0">
+        <strong>第二组（统一主色）<span style="font-weight:400">：</span> B 全蓝</strong> —— 最简、零解释成本，
+        但只读的「读」和会改表的「写/执行」长得一样。<br>
+        <strong>D（读蓝 / 写·执行橙）</strong> —— 如果你愿意放弃"三色"、只按"是否动表"分两类，这个信息最干净。<br>
+        <span style="font-weight:400">C（我原来的两实心＋一描边）<strong>已撤回</strong> —— 它讲不出"为什么执行是描边"，
+        你的疑问正好证明了这一点。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ ⑦ 输入提示位置 ═══════════════ -->
+  <div class="stage" id="s7">
+    <p class="sub" style="margin-bottom:6px">
+      <strong>「ⓘ 6 段已识别」单独占一行确实浪费</strong> —— 5 个字吃掉一行高度，而"识别成功"本来就是常态。<br>
+      <span style="color:var(--label3)">下面 5 种放法（均为实际尺寸）。①② 已按 <b>V2 + V2b</b> 应用 —— 两条提示共省掉 3 行。</span>
+    </p>
+
+    <div class="vsec"><b>把状态挪到已有的空位上</b><span>不新增高度，信息也还在</span></div>
+
+    <div class="vwrap">
+
+      <div class="vcard">
+        <div class="vh"><b>V0　现状</b>　独占一行<span class="pill">占 1 行</span></div>
+        <div class="vprev">
+          <div class="labeled" style="margin-bottom:9px">
+            <span class="flabel">逻辑名 OBIS</span>
+            <input class="fbox mono" value="0.0.96.1.0.255">
+          </div>
+          <div class="hintline">ⓘ 6 段已识别</div>
+        </div>
+        <div class="vp">
+          <div><span class="n">✕</span><span>合法时也占一整行；和下一个字段的提示叠在一起，主界面被拉长</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>V1　只在非法时才出现</b><span class="pill">常态 0 行</span></div>
+        <div class="vprev">
+          <div style="font-size:11.5px;color:var(--label3);margin-bottom:6px">① 合法 → 下方什么都没有</div>
+          <div class="labeled">
+            <span class="flabel">逻辑名 OBIS</span>
+            <input class="fbox mono" value="0.0.96.1.0.255">
+          </div>
+          <div style="font-size:11.5px;color:var(--label3);margin:14px 0 6px">② 非法 → 才出现提示</div>
+          <div class="labeled">
+            <span class="flabel">逻辑名 OBIS</span>
+            <input class="fbox mono" value="1.0.96.1.0" style="border-color:var(--orange)">
+          </div>
+          <div class="hintline warn">⚠ OBIS 需 6 段、每段 0-255</div>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>最省空间：正常时零占用，出问题时才醒目</span></div>
+          <div><span class="n">✕</span><span>失去了"已识别"的正面确认 —— 填写正确时界面完全沉默</span></div>
+        </div>
+      </div>
+
+      <div class="vcard rec">
+        <div class="vh"><b>V2　挪到标签行右侧</b><span class="pill new">已应用 · 推荐</span></div>
+        <div class="vprev">
+          <div class="labeled">
+            <span class="flabel">逻辑名 OBIS<span class="fstat">ⓘ 6 段已识别</span></span>
+            <input class="fbox mono" value="0.0.96.1.0.255">
+          </div>
+          <div class="vnote">标签行左侧「逻辑名 OBIS」很短，右边本来空着 —— 把状态放过去，<b>不新增任何高度</b></div>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>省掉整行（约 22pt），位置也自然 —— 状态就贴在它描述的那个字段上</span></div>
+          <div><span class="y">✓</span><span>正面确认仍在（不像 V1 那样沉默）</span></div>
+          <div><span class="y">✓</span><span>非法时同一位置变橙色加粗，不跳动、不需要找</span></div>
+        </div>
+      </div>
+
+      <div class="vcard rec">
+        <div class="vh"><b>V2b　同一个思路用到「请求数据」</b><span class="pill new">已应用</span></div>
+        <div class="vprev">
+          <div class="labeled" style="margin-bottom:11px">
+            <span class="flabel">逻辑名 OBIS<span class="fstat">ⓘ 6 段已识别</span></span>
+            <input class="fbox mono" value="0.0.96.1.0.255">
+          </div>
+          <div class="labeled">
+            <span class="flabel">请求数据<span class="fstat">ⓘ 写/执行用 · 留空 = 无参数</span></span>
+            <input class="fbox mono" placeholder="HEX，如 11 01（选 OBIS 自动填入）">
+          </div>
+          <div class="vnote">两条提示都上移到标签行 → 共省掉 3 行</div>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>「请求数据」那条提示<strong>有两行</strong>，同样挪上去再省约 34pt；两处风格统一</span></div>
+          <div><span class="y">✓</span><span><strong>细则完全没丢</strong>：把「选 OBIS 时会自动填入」放进<strong>输入框的 placeholder</strong> —— 而 placeholder 只在字段为空时才可见，正好是这条信息唯一有用的时刻</span></div>
+          <div><span class="y">✓</span><span>「写/执行用它，读不用」缩短为「写/执行用」，意思保留、改为常显</span></div>
+        </div>
+      </div>
+
+      <div class="vcard">
+        <div class="vh"><b>V3　收进输入框内</b><span class="pill">最紧凑</span></div>
+        <div class="vprev">
+          <div class="labeled">
+            <span class="flabel">逻辑名 OBIS</span>
+            <div class="finbox">
+              <input class="fbox mono" value="0.0.96.1.0.255">
+              <span class="fic">✓</span>
+            </div>
+          </div>
+          <div class="vnote">框内右侧一个小图标；非法时变 ⚠ 橙色</div>
+        </div>
+        <div class="vp">
+          <div><span class="y">✓</span><span>占用最小，且状态紧贴输入内容</span></div>
+          <div><span class="n">✕</span><span>只有图标、没有文字 —— 出问题时还得靠别的途径知道"为什么不行"</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="clist" style="margin-top:26px">
+      <h2>我的建议</h2>
+      <div class="note" style="background:rgba(52,199,89,.08);color:#1a7d3c">
+        <strong>V2 + V2b 都已应用到 ①②</strong> —— 两条提示共省掉 3 行（约 56pt），
+        且<strong>信息一条没丢</strong>：「选 OBIS 会自动填入」这条细则搬进了输入框的 placeholder，
+        而 placeholder 只在字段为空时可见，正好是它唯一有用的时刻。<br>
+        <span style="color:var(--label2)">省下的空间让主界面不用滚那么多 —— 与标签 ⑥ 里「面板高度要不要加到 340pt」正好是一对：
+        上面省出来的高度，可以直接还给面板。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ 改动清单 ═══════════════ -->
+  <div class="clist">
+    <h2>改动清单（按屏对应）</h2>
+    <div class="note">
+      <strong>与报告原提案的差异</strong>：① 剔除报告的 D（报文「四列」）—— 代码 v1.7 已是「三列 + HEX 独占整行」；
+      ② 剔除 B2「给执行加禁用说明」—— 该按钮从不禁用，改为「给正常按钮外观」；
+      ③ 剔除「清单加滑动删除」—— <code>.onDelete</code> 已存在；
+      ④ 剔除 E1 密钥遮罩（你已否决）；⑤ 补入报告漏掉的 10 / 13 / 14 三条。
+    </div>
+    <table>
+      <thead><tr><th class="n">#</th><th>改动</th><th>位置</th><th class="c">优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td>「接口类 / 属性」加<strong>常驻标签</strong>（原来只有 placeholder，填了值就消失）</td><td class="c">主界面 · 解析 / 报文<br>报文 <span class="pill">P0</span></td><td class="c">P0</td></tr>
+        <tr><td class="n">2</td><td>「逻辑名 OBIS」加常驻标签</td><td class="c">主界面</td><td class="c">P0</td></tr>
+        <tr><td class="n">3</td><td>「请求数据」加常驻标签，说明改为「写/执行用它，读不用」</td><td class="c">主界面</td><td class="c">P0</td></tr>
+        <tr><td class="n">3b</td><td><strong>两条输入提示都上移到标签行</strong>，共省掉 3 行（约 56pt）：<br>· 「ⓘ 6 段已识别」→ OBIS 标签行右侧<br>· 「写/执行用 · 留空 = 无参数」→ 请求数据标签行右侧<br>· 细则「选 OBIS 时会自动填入」→ 放进<strong>该字段的 placeholder</strong>（placeholder 只在字段为空时可见，正好是这条信息有用的时刻）<span class="pill new">用户反馈</span></td><td class="c">主界面</td><td class="c">P0</td></tr>
+        <tr><td class="n">4</td><td>状态栏补<strong>时间戳 + 最新值</strong>：<code>● 完成 · 10:35:08 · 设备ID = GRX3</code>（值由 <code>onFinish</code> 显式供给，不拆状态文本）</td><td class="c">主界面</td><td class="c">P0</td></tr>
+        <tr><td class="n">5</td><td>读/写/执行 按钮。<strong>保留原方案的读＝紫 / 写＝蓝</strong>（三色编码本身成立），只把出问题的「执行」换掉 —— 详见标签 ⑥ 第一组。<span style="color:#8a5a00">⚠️ 我原提的「两实心＋一描边」（方案 C）<strong>已撤回</strong>；当前原型套用的是 <strong>F：执行＝橙</strong></span></td><td class="c">主界面</td><td class="c">P0</td></tr>
+        <tr><td class="n">6</td><td>解析/报文面板内嵌高度 <strong>260 → 340pt</strong>（截图中面板底部实际是被屏幕裁掉的，页面本就在滚动）<br><span style="color:#8a5a00">⚠️ 这条有取舍：加高会让主界面更需要滚动。报告说"下方有剩余空间"，但从截图看空间已被裁掉的部分占用了 —— <strong>建议实机确认是否值得</strong>，或改成"面板高度可拖拽/记忆"</span></td><td class="c">主界面</td><td class="c">P1</td></tr>
+        <tr><td class="n">7</td><td>报文类型列加 <strong>ⓘ</strong> 角标（长按说明"启发式识别，可能误标 · R20"）。该列已是灰色，不再弱化</td><td class="c">主界面 · 报文</td><td class="c">P1</td></tr>
+        <tr><td class="n">8</td><td>认证方式 / 信息加密<strong>并入「安全」Section 相邻两行</strong>；脚注明确「两者独立配置、互不影响」（<strong>不写</strong>"需桥接层处理"—— 该组合 v1.6 已修好并现场验证）</td><td class="c">连接参数</td><td class="c">P0</td></tr>
+        <tr><td class="n">9</td><td><strong>删除</strong>连接参数页的「解析使能」，只留解析面板 header（状态仍持久化）</td><td class="c">连接参数</td><td class="c">P0</td></tr>
+        <tr><td class="n">10</td><td>清单行 1 <strong>不再重复显示 code</strong>（原为 <code>名称 · code</code> + 行 2 <code>code · unit</code>，code 出现两遍）<span class="pill new">报告漏项</span></td><td class="c">OBIS 清单</td><td class="c">P0</td></tr>
+        <tr><td class="n">11</td><td>加<strong>搜索框</strong>（按名称 / OBIS 代码）</td><td class="c">OBIS 清单</td><td class="c">P1</td></tr>
+        <tr><td class="n">12</td><td>行高 44 → <strong>68pt</strong>（大点击目标）+ 加<strong>复制</strong>按钮；<strong>滑动删除已有，无需新增</strong></td><td class="c">OBIS 清单</td><td class="c">P1</td></tr>
+        <tr><td class="n">13</td><td>编辑器字段全部加<strong>常驻标签</strong>（原为 6 个裸输入框）</td><td class="c">添加/编辑 OBIS</td><td class="c">P0</td></tr>
+        <tr><td class="n dim">14</td><td><strong>不再预填「接口类＝1 / 属性＝2」</strong>—— 原默认值会被静默采纳，使 <code>0.0.42.x</code> 存成 1 类而读错对象<span class="pill new">报告漏项 · 比报告 A 更严重</span></td><td class="c">添加/编辑 OBIS</td><td class="c">P0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="legend">
+    <span><span class="pill p0">P0</span> 纯视图层，本期可做</span>
+    <span><span class="pill p1">P1</span> 下一版</span>
+    <span><span class="pill new">报告漏项</span> 核对时发现、报告未提</span>
+  </div>
+
+  <p class="sub" style="margin-top:22px">
+    还有两项未在此原型体现（不影响视觉判断）：<br>
+    · <strong>深色模式</strong>上机验证（现场常在地下室）<br>
+    · <strong>长按复制</strong>单帧 / 复制全部（报文与解析面板）<br>
+    · <strong>文档修正</strong>：方案 §3 布局图「HEX 四列」→「三列 + HEX 独占整行」；R24 占位符 <code>3 / 0x1F</code> → 与代码统一为 <code>1 / 0x1F</code>
+  </p>
+</div>
+
+<script>
+  // 分屏切换
+  const tabs = document.querySelectorAll('#tabs .tab');
+  const stages = document.querySelectorAll('.stage');
+  tabs.forEach(t => t.addEventListener('click', () => {
+    tabs.forEach(x => x.classList.remove('on'));
+    t.classList.add('on');
+    stages.forEach(s => s.classList.toggle('on', s.id === t.dataset.s));
+  }));
+
+  // 显示/隐藏「现状」
+  const cbBefore = document.getElementById('cbBefore');
+  cbBefore.addEventListener('change', () => {
+    document.querySelectorAll('.before-col').forEach(c => {
+      c.style.display = cbBefore.checked ? '' : 'none';
+    });
+  });
+
+  // 显示/隐藏标注
+  const cbMarks = document.getElementById('cbMarks');
+  cbMarks.addEventListener('change', () => {
+    document.body.classList.toggle('nomarks', !cbMarks.checked);
+  });
+
+  // 可交互：分段控件
+  document.querySelectorAll('.seg').forEach(seg => {
+    seg.querySelectorAll('div').forEach(d => d.addEventListener('click', () => {
+      seg.querySelectorAll('div').forEach(x => x.classList.remove('on'));
+      d.classList.add('on');
+    }));
+  });
+
+  // 可交互：开关
+  document.querySelectorAll('.switch').forEach(s => s.addEventListener('click', () => s.classList.toggle('off')));
+
+  // 按钮方案切换（驱动 body[data-btn]，实时作用于主界面 ①②）
+  document.querySelectorAll('.vbtn').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('.vbtn').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    document.body.dataset.btn = b.dataset.v;
+  }));
+</script>
+</body>
+</html>
