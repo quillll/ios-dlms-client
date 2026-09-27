@@ -73,6 +73,17 @@ run_e2e() {          # $1=scenario；其余参数转给 mock_meter
 E2E_ARGS=""
 run_e2e basic
 
+# ②b 不要求认证的完整会话（auth=NONE）：**强断言 —— 建链必须真返回 0**。
+#     为什么单独需要这一档：HLS-GMAC 那条路径**在本地桩上结构性验不了** ——
+#     服务端要回 17 字节的 SC+IC+GMAC，而客户端会逐字节校验它，
+#     但 `tools/mock_meter.c` 不链接 DLMS 库、算不出 GMAC。
+#     于是"建链到底通不通"在 CI 里长期**没有任何断言覆盖**（只有"未崩溃"这种弱判据）。
+#     这一档把 AARQ/AARE + 读/写/执行/断链整条链路真正验一遍。
+echo
+echo "=== ②b 端到端 local_e2e（auth=NONE · 强断言建链）==="
+E2E_ARGS="--auth none"
+run_e2e basic --no-auth
+
 # ③ 分片场景（真实链路常态：响应被 TCP 拆成多段到达）—— 现在是**强断言**。
 #    这一档曾长期"退化"（重试暴涨、卡在 AARQ/AARE），根因是桥接层 bufAppend 误用
 #    bb_insert 做追加（它不更新 size、且把 index 当源偏移）—— 已修复，故按正常要求断言。

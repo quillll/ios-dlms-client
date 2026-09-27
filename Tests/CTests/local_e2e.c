@@ -7,6 +7,10 @@
 //
 // 用法（由 Tests/CTests/run.sh 编排）：
 //   local_e2e [--port N] [--scenario basic|fragile|silent] [--recv-timeout-ms N]
+//             [--dump-rx] [--dump-frames] [--auth none|gm]
+//     --dump-frames：打印每个 TX/RX 帧的原始十六进制（排查"卡在第几步"用）
+//     --auth none   ：跳过 HLS 挑战应答（mock 不链接 DLMS 库、算不出 GMAC，
+//                     所以 HLS-GMAC 那条路径在本地桩上结构性验不了）
 //     basic  ：正常会话（connect → 读 → 写 → 执行 → 断开），**强断言**
 //     fragile：分片退化观察，只断言"不崩不挂 + 重试有界"
 //     silent ：模拟表若干帧后不再应答 —— 验证客户端**有界退出**（不挂死）
@@ -39,6 +43,7 @@ typedef struct
     int traceTx;                       // trace 回调收到的 TX/RX 次数
     int traceRx;
     int dump;                          // --dump-rx：逐次打印接收缓冲的 size/position
+    int dumpFrames;                    // --dump-frames：打印每个 TX/RX 帧的原始十六进制
     dlmsCtx* ctx;                      // 供诊断查询（dlms_rxSize/dlms_rxPosition）
 } Io;
 
@@ -88,9 +93,22 @@ static int ioRecv(void* user, unsigned char* buf, int cap, int* got)
 static void ioTrace(void* user, int direction, const unsigned char* frame, int len)
 {
     Io* io = (Io*)user;
-    (void)frame; (void)len;
+    int i;
     if (direction == 1) { io->traceTx++; }
     else { io->traceRx++; }
+    // --dump-frames：把每个 TX/RX 帧的原始十六进制打出来。
+    // 排查"建链卡在第几步"时**必须看到实际字节** —— 光有 ret= 只能知道失败，
+    // 看不出客户端发的是明文 `C3` 还是密文 `CB`（HLS 那一步的关键区别）。
+    if (io->dumpFrames && frame != NULL && len > 0)
+    {
+        printf("[frame] %s len=%d ", direction == 1 ? "TX" : "RX", len);
+        for (i = 0; i < len; ++i)
+        {
+            printf("%02X", frame[i]);
+            if (i + 1 < len) { printf(" "); }
+        }
+        printf("\n");
+    }
 }
 
 // 0.0.40.0.0.255 —— Association LN
@@ -99,6 +117,7 @@ static const unsigned char OBIS_ASSOC[6] = { 0, 0, 40, 0, 0, 255 };
 int main(int argc, char** argv)
 {
     int port = 40599, i, tryConnect;
+    int authHighGmac = 1;              // --auth none 时置 0（跳过 HLS）
     const char* scenario = "basic";
     sock_t fd = SOCK_INVALID;
     struct sockaddr_in a;
@@ -116,6 +135,12 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i], "--scenario") && i + 1 < argc) { scenario = argv[++i]; }
         else if (!strcmp(argv[i], "--recv-timeout-ms") && i + 1 < argc) { io.recvTimeoutMs = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--dump-rx")) { io.dump = 1; }
+        else if (!strcmp(argv[i], "--dump-frames")) { io.dumpFrames = 1; }
+        else if (!strcmp(argv[i], "--auth") && i + 1 < argc)
+        {
+            // none = 跳过 HLS（本地能验完整链路）；gm = HLS-GMAC（需服务端算 GMAC，桩验不了）
+            authHighGmac = strcmp(argv[++i], "gm") == 0;
+        }
         else { printf("e2e: 未知参数 %s\n", argv[i]); return 1; }
     }
     // scenario 白名单：未知值直接报错退出，避免悄悄按某个分支跑
@@ -151,7 +176,14 @@ int main(int argc, char** argv)
     printf("[e2e] connected\n");
 
     // 配置与现场一致：Wrapper / 客户端 1 / 服务端 1 / HLS-GMAC / 信息加密 = NONE / ST = ABC12345
-    c = dlms_new(1, 0x01, 0x0001, DLMS_AUTHENTICATION_HIGH_GMAC, "",
+    //
+    // ⚠️ `--auth none` 的意义：HLS-GMAC 下 `cl_parseApplicationAssociationResponse` 要求服务端
+    //    回一个 17 字节的 OCTET STRING（SC+IC+GMAC）并**逐字节校验**它。
+    //    而 `tools/mock_meter.c` **不链接 DLMS 库**、算不出 GMAC → 无论如何都过不了这一步。
+    //    所以那条路径在本地桩上**结构性地验不了**（真表验过，见方案文档里程碑）。
+    //    把认证换成 NONE 就能跳过 HLS，让建链 + 读/写/执行/断链整条链路**在本地真正跑通**。
+    c = dlms_new(1, 0x01, 0x0001, authHighGmac ? DLMS_AUTHENTICATION_HIGH_GMAC
+                                               : DLMS_AUTHENTICATION_NONE, "",
                  DLMS_INTERFACE_TYPE_WRAPPER);
     CHECK(c != NULL, "e2e: dlms_new(Wrapper) 成功");
     if (c == NULL) { return 1; }
@@ -175,11 +207,31 @@ int main(int argc, char** argv)
 
     if (strcmp(scenario, "silent") != 0)
     {
-        // 建链：Wrapper 下 AARQ/AARE 必须过（step>4）。
-        // 这一条对**分片到货**同样成立 —— 分片曾是长期"已知退化"，根因是桥接层
-        // bufAppend 误用 bb_insert（它不更新 size、把 index 当源偏移），已修复。
-        CHECK(r1 == DLMS_ERROR_CODE_OK || dlms_lastStep(c) >= 5,
-              "e2e: Wrapper 建链已越过 AARQ/AARE（含响应被 TCP 拆开的场景）");
+        // 建链断言**按认证方式分开**（"能断言就必须断言"）：
+        //
+        // · auth=NONE：整条建链必须**真返回 0**。这才是"验到实质"。
+        //   此前从没有过这条 —— 于是"建链到底通不通"在 CI 里**从未被验证过**。
+        //
+        // · HLS-GMAC（默认）：**在本地桩上结构性无法成功**，别拿它当真失败：
+        //   服务端必须回一个 17 字节的 OCTET STRING（SC+IC+GMAC），
+        //   而客户端在 `cl_parseApplicationAssociationResponse` 里会**逐字节校验**它
+        //   （用服务端 SystemTitle 作密钥重算 GMAC）；`tools/mock_meter.c` 不链接
+        //   DLMS 库、算不出 GMAC → 永远过不了第 6 步。
+        //   所以这里只断言"已越过 AARQ/AARE"（step>=5 意味着 AARE 已被接受并已发起 HLS）
+        //   —— 这是该场景下**能拿到的最强证据**。真表上的 HLS 关联已通过（方案文档里程碑）。
+        //
+        // 分片到货同样成立 —— 分片曾是长期"已知退化"，根因是桥接层 bufAppend 误用
+        // bb_insert（它不更新 size、把 index 当源偏移），已修复。
+        if (authHighGmac)
+        {
+            CHECK(dlms_lastStep(c) >= 5,
+                  "e2e: Wrapper 建链已越过 AARQ/AARE（HLS-GMAC 在桩上结构性验不了，见注释）");
+        }
+        else
+        {
+            CHECK(r1 == DLMS_ERROR_CODE_OK,
+                  "e2e: Wrapper 建链**成功**（auth=NONE：AARQ/AARE 全程真返回 0）");
+        }
 
         outLen = (int)sizeof(out);
         out[0] = '\0';

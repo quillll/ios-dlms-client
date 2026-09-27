@@ -5,7 +5,9 @@
 // “长响应被 TCP 拆开导致丢数据/解析失败”正是真机上最难复现的那类问题（P2）。
 //
 // 用法：
-//   mock_meter [--port N] [--frag N] [--delay-ms N] [--silent-after N] [--quiet]
+//   mock_meter [--port N] [--frag N] [--delay-ms N] [--silent-after N] [--quiet] [--no-auth]
+//     --no-auth     AARQ 用**不要求认证**的 AARE 应答（配合 local_e2e --auth none，
+//                   让建链+读/写/执行/断链整条链路在本地真正跑通）
 //     --port        监听端口（默认 40599）
 //     --frag        每个响应按 N 字节分片发送（0/缺省 = 一次性整帧；建议 8~16 做压力）
 //     --delay-ms    分片之间的间隔毫秒（默认 0）
@@ -59,6 +61,33 @@ static unsigned char AARE_PL[] = {
     0x1F, 0x04, 0x00, 0x40, 0x1C, 0x1D, 0x00, 0x7D, 0x00, 0x07
 };
 
+// **不要求认证**的 AARE（`--no-auth` 时用它）。
+//
+// 为什么必须有这一份：`apdu.c:1267` 在解析 AARE 时会按 `89` 机制字段**覆写**
+// `settings->authentication` —— 所以哪怕客户端配置成 NONE，只要 AARE 里带
+// `89 07 60 85 74 05 08 02 05`(HighGMAC)，客户端仍会被改成 HLS-GMAC 并进入挑战应答；
+// 而本 mock **不链接 DLMS 库**、算不出 GMAC（客户端会逐字节校验 17B 的 SC+IC+GMAC），
+// 于是永远卡在建链第 6 步。
+//
+// 与 AARE_PL 的差别只有三处：
+//   ① 诊断 `14`(authentication-required) → `00`(无原因，即不要求认证)
+//   ② **删掉 `89` 机制字段**（它就是覆写 authentication 的元凶）
+//   ③ 删掉 `AA`(server-to-client challenge) —— 不要求认证时服务端不下发挑战
+// 长度：11+5+7+12+4+18 = 57 = 0x39。
+static unsigned char AARE_NONE_PL[] = {
+    0x61, 0x39,
+    0xA1, 0x09, 0x06, 0x07, 0x60, 0x85, 0x74, 0x05, 0x08, 0x01, 0x01,
+    0xA2, 0x03, 0x02, 0x01, 0x00,
+    0xA3, 0x05, 0xA1, 0x03, 0x02, 0x01, 0x00,
+    0xA4, 0x0A, 0x04, 0x08, 0x41, 0x42, 0x43, 0x31, 0x32, 0x33, 0x34, 0x35,
+    0x88, 0x02, 0x07, 0x80,
+    0xBE, 0x10, 0x04, 0x0E, 0x08, 0x00, 0x06, 0x5F,
+    0x1F, 0x04, 0x00, 0x40, 0x1C, 0x1D, 0x00, 0x7D, 0x00, 0x07
+};
+
+/// `--no-auth`：AARQ 用不要求认证的 AARE 应答（配合 local_e2e --auth none）。
+static int gNoAuth = 0;
+
 // HLS 应答的确认：action-response，invoke-id=1，result=0(成功)（明文，与真表 NONE 场景一致）。
 static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0xC1, 0x00, 0x01, 0x00 };
 // Get-Response：invoke-id=1、result=0(data)，data = octet-string(1 字节 0x2A)。
@@ -90,7 +119,11 @@ static int pickResponse(const unsigned char* req, int reqLen, unsigned char** re
     static const unsigned char HLS_ACT[] = { 0xC3, 0x01, 0xC1, 0x00, 0x0F };
     static const unsigned char HLS_GLO[] = { 0xCB, 0x01, 0xC1, 0x00, 0x0F };
     if (reqLen <= 0) { return 0; }
-    if (req[0] == 0x60) { *respOut = AARE_PL; return (int)sizeof(AARE_PL); }        // AARQ → AARE
+    if (req[0] == 0x60)                                                             // AARQ → AARE
+    {
+        if (gNoAuth) { *respOut = AARE_NONE_PL; return (int)sizeof(AARE_NONE_PL); }
+        *respOut = AARE_PL; return (int)sizeof(AARE_PL);
+    }
     if (contains(req, reqLen, HLS_ACT, 5) || contains(req, reqLen, HLS_GLO, 5))
     { *respOut = HLS_OK_PL; return (int)sizeof(HLS_OK_PL); }                        // HLS 认证
     // tag 取值已核对 enums.h：GET_REQUEST=0xC0、SET_REQUEST=0xC1、RELEASE_REQUEST=0x62。
@@ -118,6 +151,7 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i], "--delay-ms") && i + 1 < argc) { delayMs = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--silent-after") && i + 1 < argc) { silentAfter = atoi(argv[++i]); }
         else if (!strcmp(argv[i], "--quiet")) { quiet = 1; }
+        else if (!strcmp(argv[i], "--no-auth")) { gNoAuth = 1; }
         else { printf("unknown arg: %s\n", argv[i]); return 1; }
     }
 
