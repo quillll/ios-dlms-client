@@ -4,7 +4,6 @@
 //
 
 import SwiftUI
-import UIKit
 import UniformTypeIdentifiers
 
 struct ObisLibraryView: View {
@@ -18,6 +17,8 @@ struct ObisLibraryView: View {
     @State private var showAlert = false
     /// 搜索词（名称或 OBIS 代码）
     @State private var query = ""
+    /// 复制（duplicate）模式的源条目；此时 `editing` 必须为 nil。
+    @State private var copySource: ObisItem? = nil
 
     var body: some View {
         NavigationStack {
@@ -35,8 +36,18 @@ struct ObisLibraryView: View {
                             // 原来用的是 `displayName`（= "名称 · code"），而下一行又是 code
                             // → code 被显示两遍、白占一行（见 docs/UI评审-核对报告.md §3.1）。
                             Text(item.name.isEmpty ? item.code : item.name).font(.body)
-                            Text(item.unit.isEmpty ? item.code : "\(item.code) · \(item.unit)")
-                                .font(.caption).monospaced().foregroundStyle(.secondary)
+                            HStack(spacing: 5) {
+                                // 身份是「类 + 逻辑名 + 属性」，所以必须把类/属性也显示出来 ——
+                                // 否则两条同逻辑名的条目（不同类或不同属性）在列表里长得一模一样。
+                                Text("类\(item.objectClass) 属\(item.attribute)")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.secondary.opacity(0.16)))
+                                Text(item.unit.isEmpty ? item.code : "\(item.code) · \(item.unit)")
+                                    .font(.caption).monospaced().foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
                             // 配了请求数据的条目直接标出来（Set/Action 时会被自动填入）
                             if !item.data.isEmpty {
                                 Text("→ \(item.data)")
@@ -44,10 +55,15 @@ struct ObisLibraryView: View {
                             }
                         }
                         Spacer(minLength: 4)
-                        // 复制一条（现场常要把 code 贴到别处）。
+                        // **复制一条**：以本条为模板打开编辑器，保存时作为**新条目**插入
+                        //（保存前会按「类 + 逻辑名 + 属性」查重，重复则拦下）。
                         // 注：**滑动删除本来就有**（下面的 .onDelete），不必再加。
-                        Button { copy(item) } label: { Image(systemName: "doc.on.doc") }
-                        Button { editing = item; showEditor = true } label: { Image(systemName: "pencil") }
+                        Button {
+                            copySource = item; editing = nil; showEditor = true
+                        } label: { Image(systemName: "doc.on.doc") }
+                        Button {
+                            editing = item; copySource = nil; showEditor = true
+                        } label: { Image(systemName: "pencil") }
                     }
                     // 放大点击目标（原来贴得较紧，单手现场操作不好点）
                     .padding(.vertical, 7)
@@ -57,7 +73,9 @@ struct ObisLibraryView: View {
             .navigationTitle("OBIS 清单")
             .searchable(text: $query, prompt: "搜索名称或 OBIS 代码")
             .toolbar { toolbarItems }
-            .sheet(isPresented: $showEditor) { ObisEditorSheet(item: $editing).environmentObject(store) }
+            .sheet(isPresented: $showEditor) {
+                ObisEditorSheet(item: $editing, template: copySource).environmentObject(store)
+            }
             .sheet(isPresented: $showPresets) { presetSheet }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .commaSeparatedText, .plainText]) { result in handleImport(result) }
             .alert(alertTitle, isPresented: $showAlert) { Button("好", role: .cancel) {} } message: { Text(alertText) }
@@ -76,15 +94,16 @@ struct ObisLibraryView: View {
         }
     }
 
-    private func copy(_ item: ObisItem) {
-        UIPasteboard.general.string = "\(item.code) \(item.name)"
-    }
+    // 「复制」按钮的含义是**复制一条记录**（duplicate），不是"复制到剪贴板" ——
+    // 列表语境配 `doc.on.doc` 图标就是这个意思。原实现把 code+名称写进剪贴板，
+    // 但拼出来的串会被 `ObisUtil.parse` 拒绝（它按空白也切段，拼上名称就成了 7 段），
+    // 等于复制了也贴不回主界面。已改为打开编辑器预填。
 
     private var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Button { showPresets = true } label: { Image(systemName: "sparkles") }
             Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
-            Button { editing = nil; showEditor = true } label: { Image(systemName: "plus") }
+            Button { editing = nil; copySource = nil; showEditor = true } label: { Image(systemName: "plus") }
         }
     }
 
@@ -153,6 +172,8 @@ struct ObisEditorSheet: View {
     @State private var data = ""
     @State private var showError = false
     @State private var errorMsg = ""
+    @State private var errorTitle = ""
+    var template: ObisItem? = nil
 
     var body: some View {
         NavigationStack {
@@ -203,12 +224,16 @@ struct ObisEditorSheet: View {
                          + "免去每次手输。留空 = 无参数。")
                 }
             }
-            .navigationTitle(item == nil ? "添加 OBIS" : "编辑 OBIS")
+            .navigationTitle(titleText)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { save() } }
             }
-            .alert("无法保存", isPresented: $showError) { Button("好", role: .cancel) {} } message: {
+            // ⚠️ 这里**只能有一个 `.alert`** —— 同一视图上挂多个时 SwiftUI 只认最后一个。
+            // 所以「校验失败」与「重复被拦下」共用它，靠 `errorTitle` 区分。
+            .alert(errorTitle, isPresented: $showError) {
+                Button("好", role: .cancel) {}
+            } message: {
                 Text(errorMsg)
             }
         }
@@ -224,14 +249,36 @@ struct ObisEditorSheet: View {
     }
 
     private func load() {
-        guard let item else { return }
-        code = item.code; name = item.name; unit = item.unit
-        icText = "\(item.objectClass)"; attr = "\(item.attribute)"; scaling = item.scaling
-        data = item.data
+        if let item {
+            // 编辑：用当前值，id 不变 → `store.save` 会原地更新
+            code = item.code; name = item.name; unit = item.unit
+            icText = "\(item.objectClass)"; attr = "\(item.attribute)"; scaling = item.scaling
+            data = item.data
+            return
+        }
+        if let t = template {
+            // 复制：以它为初值新建一条。
+            // ⚠️ **不能把 `t.id` 带过来** —— `var it = item ?? ObisItem(code: code)`
+            // 会生成新 UUID，所以保存出来的一定是新条目（不会改到源条目）。
+            code = t.code
+            name = (t.name.isEmpty ? t.code : t.name) + " 副本"
+            unit = t.unit
+            icText = "\(t.objectClass)"
+            attr = "\(t.attribute)"
+            scaling = t.scaling
+            data = t.data
+        }
+    }
+
+    /// 标题：新增 / 复制 / 编辑 三种模式。
+    private var titleText: String {
+        if item != nil { return "编辑 OBIS" }
+        return template == nil ? "添加 OBIS" : "复制 OBIS"
     }
 
     private func save() {
         guard ObisUtil.parse(code) != nil else {
+            errorTitle = "无法保存"
             errorMsg = "OBIS 需为 6 段，如 1.0.1.8.0.255"
             showError = true
             return
@@ -240,16 +287,40 @@ struct ObisEditorSheet: View {
         // 原来预填 "1" + 静默采纳，会让新增的 `0.0.42.x`（应为 42 类）被存成 1 类，
         // 之后按这条去读就是**另一个对象**（见 docs/UI评审-核对报告.md §3.2）。
         guard let ic = NumberInput.parse(icText) else {
+            errorTitle = "无法保存"
             errorMsg = "接口类需填数字（如 1 / 3 / 42，也可写 0x1F）。"
                      + "留空不保存，避免被当成 1 类用。"
             showError = true
             return
         }
         guard let at = NumberInput.parse(attr) else {
+            errorTitle = "无法保存"
             errorMsg = "属性 / 方法需填数字（如 2）"
             showError = true
             return
         }
+
+        // 重复检查：按**身份键（类 + 逻辑名 + 属性）**。命中就**拦下不许保存**
+        //（用户定的口径：不去重，但重复时直接拦下）。
+        // 编辑时排除自己 —— 只改动名称/单位不该被判为重复。
+        let key = ObisUtil.identityKey(code: code, objectClass: ic, attribute: at)
+        let selfID = item?.id
+        var conflict: ObisItem? = nil
+        for e in store.obisLibrary {
+            if e.identityKey != key { continue }
+            if let sid = selfID, e.id == sid { continue }
+            conflict = e
+            break
+        }
+        if let other = conflict {
+            errorTitle = "已存在重复条目"
+            errorMsg = "清单里已有一条「类 \(other.objectClass) · \(other.code) · 属性 \(other.attribute)」："
+                     + "\(other.displayName)。\n"
+                     + "请改动接口类 / 逻辑名 / 属性后再保存。"
+            showError = true
+            return
+        }
+
         var it = item ?? ObisItem(code: code)
         it.code = code
         it.name = name.isEmpty ? code : name
@@ -261,7 +332,9 @@ struct ObisEditorSheet: View {
         it.data = data.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         it.objectClass = ic
         it.attribute = at
-        store.upsert(obis: it)
+        // ⚠️ 用 `save` 而不是 `upsert`：前者只按 id 定位（编辑原地改、复制则追加），
+        // 后者会按身份键覆盖 —— 复制一条时那会把**源条目改掉**。
+        store.save(obis: it)
         dismiss()
     }
 }

@@ -96,8 +96,30 @@ final class Store: ObservableObject {
 
     // MARK: - OBIS 管理（覆盖式去重）
 
+    /// **编辑器保存**用：按 **id** 原地更新；id 不存在就**追加**。
+    ///
+    /// ⚠️ **绝不能按 `code` / `identityKey` 匹配** —— 否则两个已实测复现的问题：
+    ///   ① **复制**一条（新 id、同 code）会把**原条目改掉**，而不是新增一条；
+    ///   ② 编辑 A 时若把它的 code 改成与 B 相同，`firstIndex` 按数组顺序可能命中 B
+    ///      → 把 **B 覆盖掉**（B 在数组里靠前时就中招）。
+    /// （见 `docs/DLMS调试台-方案.md` §20 与核对记录。）
+    func save(obis: ObisItem) {
+        if let i = obisLibrary.firstIndex(where: { $0.id == obis.id }) {
+            obisLibrary[i] = obis
+        } else {
+            obisLibrary.append(obis)
+        }
+        persist()
+    }
+
+    /// **导入 / 常用预置**用：按**身份键（类 + 逻辑名 + 属性）覆盖去重**。
+    ///
+    /// 这两个入口的既有契约就是"覆盖去重"（导入提示文案里明写「按 code 覆盖去重」），
+    /// 所以这里保留覆盖语义 —— 只把键从"裸 code"换成"身份键"，
+    /// 这样 `1-0:1.8.0*255` 与 `1.0.1.8.0.255` 也能正确归并（原来按原文比会漏）。
     func upsert(obis: ObisItem) {
-        if let i = obisLibrary.firstIndex(where: { $0.id == obis.id || $0.code == obis.code }) {
+        let key = obis.identityKey
+        if let i = obisLibrary.firstIndex(where: { $0.id == obis.id || $0.identityKey == key }) {
             var m = obis; m.id = obisLibrary[i].id; obisLibrary[i] = m
         } else {
             obisLibrary.append(obis)
@@ -137,9 +159,15 @@ final class Store: ObservableObject {
     }
     func clearLogs() { logs.removeAll() }
 
-    func rememberObis(_ code: String) {
-        recentObis.removeAll { $0 == code }
-        recentObis.insert(code, at: 0)
+    /// 记住一条「最近用过」的对象。
+    ///
+    /// ⚠️ 存的**不是裸 code**，而是**身份键**（类 + 逻辑名 + 属性）——
+    /// 只存 code 会丢掉类与属性，同一个逻辑名在不同类/不同属性下就分不出来了。
+    /// 数组仍是 `[String]`，所以 `recent.json` 的结构不变，无需改 Codable；
+    /// 旧存档里那些"裸 code"由 `ObisUtil.codePart(ofKey:)` 兼容处理。
+    func rememberObis(_ key: String) {
+        recentObis.removeAll { $0 == key }
+        recentObis.insert(key, at: 0)
         if recentObis.count > 30 { recentObis = Array(recentObis.prefix(30)) }
         persist()
     }

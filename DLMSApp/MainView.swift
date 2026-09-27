@@ -62,7 +62,7 @@ struct MainView: View {
                 // 免得每次回到本页都把用户手改的类/属性冲掉。
                 if !didRestoreRecent {
                     didRestoreRecent = true
-                    if let code = store.recentObis.first { selectObis(code: code) }
+                    if let key = store.recentObis.first { selectObis(key: key) }
                 }
             }
         }
@@ -126,13 +126,15 @@ struct MainView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                     Menu {
-                        ForEach(store.recentObis, id: \.self) { code in
-                            Button(code) { selectObis(code: code) }
+                        ForEach(store.recentObis, id: \.self) { key in
+                            Button(recentLabel(key)) { selectObis(key: key) }
                         }
                         if !store.obisLibrary.isEmpty {
                             Divider()
                             ForEach(store.obisLibrary) { item in
-                                Button(item.displayName) { selectObis(code: item.code) }
+                                // 直接传整条：身份是「类 + 逻辑名 + 属性」，
+                                // 按 logic name 反查会有歧义（见 selectObis(_:)）
+                                Button(item.displayName) { selectObis(item) }
                             }
                         }
                     } label: {
@@ -164,22 +166,52 @@ struct MainView: View {
             .foregroundStyle(.secondary)
     }
 
-    /// 选中一个 OBIS：**同时**把「接口类」「属性」「请求数据」一起带过去。
-    /// 之前只写 currentObis，导致换条 OBIS 后类/属性还是上一条的，读出来就是错的对象。
-    /// `recentObis` 只存了 code 字符串，所以按 code 回 OBIS 清单里反查元数据；
-    /// **比较前必须先归一** —— 清单里是点分形态（`1.0.1.8.0.255`），
-    /// 而最近列表可能是用户当初的写法（`1-0:1.8.0*255`），不归一会查不到。
-    /// 清单里确实没有该 code（手输且未入库）时只更新逻辑名，不动类/属性/数据，
-    /// 免得把用户刚手填的值抹成默认。
-    private func selectObis(code: String) {
-        currentObis = code
-        let key = ObisUtil.comparisonKey(code)
-        guard let item = store.obisLibrary.first(where: { ObisUtil.comparisonKey($0.code) == key }) else { return }
+    /// 选中清单里的一条：**直接把整条带过来**，不再按逻辑名反查。
+    ///
+    /// 身份是「类 + 逻辑名 + 属性」（DLMS 三元寻址）—— 同一个逻辑名在库里可能有多条
+    ///（不同类或不同属性）。若仍按 code 反查，`first(where:)` 取到哪条取决于数组顺序，
+    /// 会产生歧义。下拉里本来就有整条 `ObisItem`，直接用它最干净。
+    private func selectObis(_ item: ObisItem) {
+        currentObis = item.code
         currentClassText = "\(item.objectClass)"
         currentAttr = "\(item.attribute)"
         // 请求数据跟着 OBIS 一起切：清单里配了就填，没配就**清空** ——
         // 否则切到另一条 OBIS 后，上一条残留的数据会被误发出去（写错对象）。
         requestHex = item.data
+    }
+
+    /// 只有逻辑名（手输、或旧存档里存的裸 code）：填逻辑名，并按归一后的 code 尽力补元数据。
+    /// 查不到就只更新逻辑名，不动类/属性/数据，免得把用户刚手填的值抹成默认。
+    private func selectObis(code: String) {
+        currentObis = code
+        let key = ObisUtil.comparisonKey(code)
+        guard let item = store.obisLibrary.first(where: { ObisUtil.comparisonKey($0.code) == key }) else { return }
+        selectObis(item)
+    }
+
+    /// 从「最近」列表选：手里只有**身份键**。先按身份键精确反查；
+    /// 查不到再按"旧存档的裸 code"兼容分支查找；都查不到就退回只填逻辑名。
+    private func selectObis(key: String) {
+        if let hit = libraryItem(forKey: key) {
+            selectObis(hit)
+            return
+        }
+        selectObis(code: ObisUtil.codePart(ofKey: key))
+    }
+
+    /// 把「最近」里的 key 解析成清单条目；解析不到返回 nil。
+    private func libraryItem(forKey key: String) -> ObisItem? {
+        if let hit = store.obisLibrary.first(where: { $0.identityKey == key }) { return hit }
+        // 兼容旧存档：那时存的是归一后的 code，没有类/属性
+        let legacy = ObisUtil.comparisonKey(key)
+        return store.obisLibrary.first { ObisUtil.comparisonKey($0.code) == legacy }
+    }
+
+    /// 「最近」里一条的显示名：能反查到就用它的名字，否则退回逻辑名部分
+    ///（避免把 `3|1.0.1.8.0.255|2` 这种键原样显示出来）。
+    private func recentLabel(_ key: String) -> String {
+        if let hit = libraryItem(forKey: key) { return hit.displayName }
+        return ObisUtil.codePart(ofKey: key)
     }
 
     // MARK: - 输入合法性提示
@@ -518,13 +550,20 @@ struct MainView: View {
         lastResultLine = ""
         let opName = op.map { $0 == .read ? "读" : ($0 == .write ? "写" : "执行") } ?? "连接测试"
         store.log(.info, opName)
-        // 存**归一形态**：否则同一对象按不同写法会进"最近"列表两条，
-        // 且回查清单时匹配不上（见 selectObis）。
-        if op != nil { store.rememberObis(ObisUtil.comparisonKey(currentObis)) }
+        // 类/属性在这里**只解析一次**，下面三处（最近列表、状态栏取名、实际下发）共用 ——
+        // 免得两处各自兜底、结果不一致。
+        let classVal = NumberInput.parse(currentClassText) ?? 1
+        let attrVal = NumberInput.parse(currentAttr) ?? 2
 
-        // 状态栏回显要用 OBIS 的中文名（清单里查得到才有；手输未入库的就只显示时间与值）
-        let obisNameKey = ObisUtil.comparisonKey(currentObis)
-        let obisName = store.obisLibrary.first { ObisUtil.comparisonKey($0.code) == obisNameKey }?.name ?? ""
+        // 「最近」记的是**身份键**（类 + 逻辑名 + 属性），不是裸逻辑名 ——
+        // 只记逻辑名会丢掉类与属性，同名不同类/不同属性的对象就分不开了。
+        if op != nil {
+            store.rememberObis(ObisUtil.identityKey(code: currentObis, objectClass: classVal, attribute: attrVal))
+        }
+
+        // 状态栏回显的中文名：按身份键精确匹配（查不到就只显示时间与值）
+        let obisNameKey = ObisUtil.identityKey(code: currentObis, objectClass: classVal, attribute: attrVal)
+        let obisName = store.obisLibrary.first { $0.identityKey == obisNameKey }?.name ?? ""
 
         let cfg = store.config
         let reader = GXDLMSReader(
@@ -552,12 +591,11 @@ struct MainView: View {
         )
         reader.run(op: op,
                    obis: op == nil ? nil : ObisUtil.parse(currentObis),
-                   // NumberInput.parse 返回 Int?；兜底默认 **1 类**（与 ObisItem.objectClass 一致）。
-                   // GXDLMSReader.run 的 classVal 参数就是 Int（内部再转 UInt16 给 C）。
-                   // 这里不要再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
-                   classVal: NumberInput.parse(currentClassText) ?? 1,
-                   // 属性与「类」用同一套 10/16 进制识别（键盘已放开，用户可能填 0x03）
-                   attr: NumberInput.parse(currentAttr) ?? 2,
+                   // classVal 是 Int（GXDLMSReader.run 内部再转 UInt16 给 C），
+                   // 这里**不要**再包一层 UInt16(...)，否则报 cannot convert 'UInt16' to 'Int'。
+                   // 解析 + 兜底统一在 start() 开头做过一次（classVal / attrVal）。
+                   classVal: classVal,
+                   attr: attrVal,
                    hex: requestHex) {
             session.isBusy = false
             store.persist()
