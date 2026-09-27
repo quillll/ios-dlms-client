@@ -237,27 +237,45 @@ int main(int argc, char** argv)
         out[0] = '\0';
         r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
         printf("[e2e] read ret=%d(%s) outLen=%d\n", r2, dlms_error_string(r2), outLen);
+        // 把**解析出来的值**打出来。只断言"ret==0 且有 -> Type/Value 两行"是不够的 ——
+        // 桩若把响应的类型/长度字节写错，解析出的可能是个**空数组**之类的空壳，
+        // 照样满足那两条断言（实测踩过：与 SET 同源的布局错误）。
+        printf("[e2e] read 解析结果:\n%s\n", out);
         printf("  ·  dlms_read 已返回（未崩溃/未挂死）\n");
         CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
               "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
         CHECK(strstr(out, "-> Type: ") != NULL && strstr(out, ", Value: ") != NULL,
               "e2e: 解析面板拿到两行块（含类型标签 HEX + -> Type/Value）");
+        // ★ 断言**解析出来的值本身**，而不只是"有两行"。
+        //
+        // 只验"ret==0 且有 Type/Value 两行"是不够的：桩的 Get-Response 布局曾写错
+        // （`C4 01 C1 00 01 00 09 01 2A`），解析出的"值"其实是 **`01 00` = 空数组**，
+        // 渲染成 `-> Type: array, Value: {}` —— 两行齐全、ret=0，**断言全过但值是空的**。
+        // 改成正确布局 `C4 01 01 00 09 01 2A` 后才真解析出 octet-string(0x2A)。
+        CHECK(strstr(out, "09 01 2A") != NULL && strstr(out, "octet-string") != NULL
+              && strstr(out, "Value: *") != NULL,
+              "e2e: dlms_read 解析出的值正确（09 01 2A -> octet-string \"*\"）");
 
         outLen = (int)sizeof(out);
         r3 = dlms_write(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2,
                         "01020304", out, &outLen);
         printf("[e2e] write ret=%d(%s)\n", r3, dlms_error_string(r3));
-        // 真实断言：过了参数校验并生成出请求，就说明 variant 构造没走错
-        //（历史崩溃点正是 buildBytesVariant 里的 byteArr 未分配）。
-        CHECK(r3 != DLMS_ERROR_CODE_INVALID_PARAMETER,
-              "e2e: dlms_write 请求已生成（历史崩溃点：byteArr 未分配）");
+        // 强断言：写必须**端到端成功**。
+        //
+        // 原来这里只写 `r3 != INVALID_PARAMETER` —— 于是 `write ret=260(OUTOFMEMORY)`
+        // 长期被放行、CI 全绿。260 的真相：**桩的 Set-Response 报文缺了 result 字节**
+        // （旧常量 `C5 01 00`，而布局是 `<tag> <type> <invoke-id> <result>`），
+        // 解析时 `bb_getUInt8` 读越界 → 直接返回 OUTOFMEMORY。
+        // **是桩错了，不是产品代码** —— 修 SET_OK_PL 后 write 各档全返回 0。
+        CHECK(r3 == DLMS_ERROR_CODE_OK,
+              "e2e: dlms_write 端到端成功（Set-Response 已正确解析）");
 
         outLen = (int)sizeof(out);
         r4 = dlms_method(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 1,
                          "0908112233", out, &outLen);
         printf("[e2e] method ret=%d(%s)\n", r4, dlms_error_string(r4));
-        CHECK(r4 != DLMS_ERROR_CODE_INVALID_PARAMETER,
-              "e2e: dlms_method 请求已生成（同源崩溃点）");
+        CHECK(r4 == DLMS_ERROR_CODE_OK,
+              "e2e: dlms_method 端到端成功");
     }
     else
     {
@@ -274,8 +292,9 @@ int main(int argc, char** argv)
     printf("[e2e] 断链…\n");
     r5 = dlms_disconnect(c);
     printf("[e2e] disconnect ret=%d(%s)\n", r5, dlms_error_string(r5));
-    CHECK(r5 != DLMS_ERROR_CODE_INVALID_PARAMETER,
-          "e2e: dlms_disconnect 已返回且参数有效（未崩溃/未挂死）");
+    // 强断言：断链必须正常返回 0（原来同样只排除 INVALID_PARAMETER，过弱）。
+    CHECK(r5 == DLMS_ERROR_CODE_OK,
+          "e2e: dlms_disconnect 正常断开（RLRQ/RLRE 或 DISC）");
 
     // trace 回调被真正调用了（同时覆盖 dlms_set_trace）
     CHECK(io.traceTx > 0 && io.traceRx > 0, "e2e: trace 回调有 TX/RX（dlms_set_trace 生效）");

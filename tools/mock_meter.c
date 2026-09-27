@@ -91,9 +91,23 @@ static int gNoAuth = 0;
 // HLS 应答的确认：action-response，invoke-id=1，result=0(成功)（明文，与真表 NONE 场景一致）。
 static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0xC1, 0x00, 0x01, 0x00 };
 // Get-Response：invoke-id=1、result=0(data)，data = octet-string(1 字节 0x2A)。
-static unsigned char GET_OK_PL[] = { 0xC4, 0x01, 0xC1, 0x00, 0x01, 0x00, 0x09, 0x01, 0x2A };
-// Set-Response：invoke-id=1、result=0(成功)。
-static unsigned char SET_OK_PL[] = { 0xC5, 0x01, 0x00 };
+// Get-Response-Normal。布局同 SET：`<tag> <type> <invoke-id> <result> <data…>`
+//（`dlms_handleGetResponse` 先读 type、再读 invokeId，`dlms.c:3929/3938`）。
+//
+// ⚠️ 旧值 `C4 01 C1 00 01 00 09 01 2A` 是**按猜的**写的：解析成 type=1 ✓、invokeId=0xC1 ✗，
+// result=0，随后把 `01 00` 当成 **array(0 个元素)**，`09 01 2A` 成了没人消费的尾巴 →
+// 读出来的"值"是 `-> Type: array, Value: {}`（**空壳**），而 `read ret=0` 照样成立。
+// 即"read 是有效断言"也是错的 —— 它一直在验一个空数组。改成正确布局后才会真的验到 octet-string。
+static unsigned char GET_OK_PL[] = { 0xC4, 0x01, 0x01, 0x00, 0x09, 0x01, 0x2A };
+// Set-Response-Normal。布局是 `<tag> <type> <invoke-id> <result>` ——
+// `dlms_handleSetResponse` **先读 type、再读 invokeId**（`dlms.c:4561/4568`），
+// 所以 invoke-id 在**第二个**字节，不是第一个。
+//
+// ⚠️ 旧值 `C5 01 00` 只有 3 字节：type=1 ✓、invokeId=0 ✗、且**缺 result 字节** →
+// 解析时 `bb_getUInt8` 读越界 → 直接返回 `OUTOFMEMORY(260)`（见 `bytebuffer.c` 的
+// `if (arr->position >= arr->size) return OUTOFMEMORY;`）。
+// 这正是长期挂着的 **`dlms_write ret=260`** 的根因 —— **是桩的报文错了，不是产品代码**。
+static unsigned char SET_OK_PL[] = { 0xC5, 0x01, 0x01, 0x00 };
 // Release-Response。依据 enums.h:1228/1233：RELEASE_REQUEST=0x62 / RELEASE_RESPONSE=0x63。
 // 注意方向：0x62 才是**请求**、0x63 是**响应** —— 客户端不会把 0x63 当请求发出来，
 // 所以下面不为 0x63 配规则（早期版本写成 0x63→0x64，两个都不是 release 语义，是错的）。
