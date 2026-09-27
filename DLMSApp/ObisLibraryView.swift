@@ -183,7 +183,7 @@ struct ObisEditorSheet: View {
                 // 原来这 6 个框只靠 placeholder 当标签，而默认值（"1" / "0.0.1.0.0.255" / "2"）
                 // 一填就把 placeholder 顶掉了 → 新增时满屏是「1」「0.0.1.0.0.255」「2」三个裸行，
                 // 完全看不出哪个是接口类（真机截图 IMG_9249 就是这个样子）。
-                Section("基本信息") {
+                Section {
                     VStack(alignment: .leading, spacing: 3) {
                         fieldLabel("名称")
                         TextField("如 正向有功总电量", text: $name)
@@ -210,6 +210,16 @@ struct ObisEditorSheet: View {
                     VStack(alignment: .leading, spacing: 3) {
                         fieldLabel("量纲 / 倍率（可选）")
                         TextField("如 -1", text: $scaling)
+                    }
+                } header: {
+                    Text("基本信息")
+                } footer: {
+                    // 只在**复制模式**出现（用 `if` 不带 else，非复制模式渲染为空、
+                    // 不会白占一段 footer 空间）。
+                    if template != nil {
+                        Text("复制模式：需改动「接口类 / 逻辑名 / 属性」其中之一才能保存 —— "
+                             + "三者都与源条目相同会被判为重复。")
+                            .foregroundStyle(.orange)
                     }
                 }
                 Section {
