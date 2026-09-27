@@ -425,6 +425,75 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// 按量纲缩放 + 附单位（状态栏展示用；解析面板仍显示原始值）。
+final class ValueScaleTests: XCTestCase {
+
+    /// 用户给的例子：1.7.0 当前功率原值 3456、量纲 -1 → 345.6 kWh。
+    func testUserExample() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "-1", unit: "kWh")
+        XCTAssertEqual(v, "345.6 kWh")
+    }
+
+    func testScalingWithoutUnit() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "-1", unit: "")
+        XCTAssertEqual(v, "345.6")
+    }
+
+    func testUnitWithoutScaling() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "", unit: "kWh")
+        XCTAssertEqual(v, "3456 kWh")
+    }
+
+    func testNeitherScalingNorUnit() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "", unit: "")
+        XCTAssertEqual(v, "3456")
+    }
+
+    func testZeroScalingKeepsValue() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "0", unit: "V")
+        XCTAssertEqual(v, "3456 V")
+    }
+
+    func testNegativeExponentThree() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "-3", unit: "kWh")
+        XCTAssertEqual(v, "3.456 kWh")
+    }
+
+    func testPositiveExponent() {
+        let v: String = ValueScale.display(raw: "3456", scaling: "2", unit: "")
+        XCTAssertEqual(v, "345600")
+    }
+
+    /// 无意义的尾零要去掉（按位格式化是为了避开浮点噪声，不是为凑满小数位）。
+    func testTrailingZerosStripped() {
+        XCTAssertEqual(ValueScale.display(raw: "2300", scaling: "-1", unit: "V"), "230 V")
+        XCTAssertEqual(ValueScale.display(raw: "1000", scaling: "-1", unit: ""), "100")
+    }
+
+    func testNegativeValue() {
+        let v: String = ValueScale.display(raw: "-123", scaling: "-1", unit: "kW")
+        XCTAssertEqual(v, "-12.3 kW")
+    }
+
+    /// 非数值：原样返回，**且不加单位** —— 给一个字符串安上 kWh 是错的。
+    func testNonNumericIsReturnedUntouchedWithoutUnit() {
+        XCTAssertEqual(ValueScale.display(raw: "GRX3", scaling: "-1", unit: "kWh"), "GRX3")
+        XCTAssertEqual(ValueScale.display(raw: "true", scaling: "", unit: "kWh"), "true")
+        XCTAssertEqual(ValueScale.display(raw: "41 42 43", scaling: "-1", unit: ""), "41 42 43")
+    }
+
+    func testEmptyInput() {
+        let v: String = ValueScale.display(raw: "", scaling: "-1", unit: "kWh")
+        XCTAssertEqual(v, "")
+    }
+
+    /// 原值本身带小数、且没配量纲 → 不擅自截断。
+    func testFractionalRawWithoutScalingIsPreserved() {
+        let v: String = ValueScale.display(raw: "12.5", scaling: "", unit: "A")
+        XCTAssertEqual(v, "12.5 A")
+    }
+}
+
 /// 下拉菜单 / 「最近」列表的标签，格式由用户指定：`名称 类*逻辑名*属性[*请求数据]`。
 final class ObisMenuLabelTests: XCTestCase {
 

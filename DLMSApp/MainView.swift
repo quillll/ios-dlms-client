@@ -62,7 +62,7 @@ struct MainView: View {
                 // 免得每次回到本页都把用户手改的类/属性冲掉。
                 if !didRestoreRecent {
                     didRestoreRecent = true
-                    if let key = store.recentObis.first { selectObis(key: key) }
+                    if let key = recentKeys.first { selectObis(key: key) }
                 }
             }
         }
@@ -126,7 +126,7 @@ struct MainView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                     Menu {
-                        ForEach(store.recentObis, id: \.self) { key in
+                        ForEach(recentKeys, id: \.self) { key in
                             Button(recentLabel(key)) { selectObis(key: key) }
                         }
                         if !store.obisLibrary.isEmpty {
@@ -197,6 +197,28 @@ struct MainView: View {
             return
         }
         selectObis(code: ObisUtil.codePart(ofKey: key))
+    }
+
+    /// 「最近」列表（**已去重**）。
+    ///
+    /// 去重的必要性：`recentObis` 是长期累积的字符串数组，
+    /// 旧存档里存的是"归一后的裸 code"，新版本存的是**身份键** ——
+    /// 两种格式会共存一段时间，而它们可能解析到**同一条目**，
+    /// 不去重的话菜单里同一个对象会出现两次。
+    ///
+    /// 解析不到条目的（手输未入库的）一律保留 —— 那种没有可比对的身份，
+    /// 去重反而会误删。
+    private var recentKeys: [String] {
+        var out: [String] = []
+        var seen = Set<UUID>()
+        for key in store.recentObis {
+            if let hit = libraryItem(forKey: key) {
+                if seen.contains(hit.id) { continue }
+                seen.insert(hit.id)
+            }
+            out.append(key)
+        }
+        return out
     }
 
     /// 把「最近」里的 key 解析成清单条目；解析不到返回 nil。
@@ -296,11 +318,21 @@ struct MainView: View {
     }
 
     /// 拼「HH:mm:ss.SSS · 名称 = 值」。
+    ///
+    /// 值要按**量纲缩放并附上单位**：表吐出来的多是原始整数（如 3456），
+    /// 而条目上配了量纲 -1 / 单位 kWh → 这里应显示 `345.6 kWh`。
+    /// （解析面板仍显示原始值 —— 那是"协议视角"，换算过就看不到表实际吐的数字了。）
+    ///
     /// 值取不到（块格式异常）就只显示时间与名称，不硬凑。
-    private static func makeResultLine(obisName: String, block: String) -> String {
+    private static func makeResultLine(obisName: String,
+                                       scaling: String,
+                                       unit: String,
+                                       block: String) -> String {
         var line = Date().dlmsLogText
         if !obisName.isEmpty { line += " · " + obisName }
-        if let v = ParseBlock.valuePart(of: block) { line += " = " + v }
+        if let raw = ParseBlock.valuePart(of: block) {
+            line += " = " + ValueScale.display(raw: raw, scaling: scaling, unit: unit)
+        }
         return line
     }
 
@@ -561,9 +593,13 @@ struct MainView: View {
             store.rememberObis(ObisUtil.identityKey(code: currentObis, objectClass: classVal, attribute: attrVal))
         }
 
-        // 状态栏回显的中文名：按身份键精确匹配（查不到就只显示时间与值）
+        // 状态栏回显要用的条目：按身份键精确匹配（查不到就只显示时间与原始值）
         let obisNameKey = ObisUtil.identityKey(code: currentObis, objectClass: classVal, attribute: attrVal)
-        let obisName = store.obisLibrary.first { $0.identityKey == obisNameKey }?.name ?? ""
+        let obisEntry = store.obisLibrary.first { $0.identityKey == obisNameKey }
+        let obisName = obisEntry?.name ?? ""
+        // 量纲与单位：状态栏的值要按它们换算后再显示（如 3456 + 量纲-1 → 345.6 kWh）
+        let obisScaling = obisEntry?.scaling ?? ""
+        let obisUnit = obisEntry?.unit ?? ""
 
         let cfg = store.config
         let reader = GXDLMSReader(
@@ -581,8 +617,12 @@ struct MainView: View {
                     store.appendParsed(value)
                     // 连上了才记入"最近连接"（参数页下拉用）；失败的地址不进列表。
                     store.config.rememberEndpoint()
-                    // 状态栏回显：值由这里**显式供给**（取纯值见 ParseBlock）
-                    lastResultLine = MainView.makeResultLine(obisName: obisName, block: value)
+                    // 状态栏回显：值由这里**显式供给**（取纯值见 ParseBlock，
+                    // 再按量纲/单位换算见 ValueScale）
+                    lastResultLine = MainView.makeResultLine(obisName: obisName,
+                                                             scaling: obisScaling,
+                                                             unit: obisUnit,
+                                                             block: value)
                 }
                 // 注意：第一个参数是 LogEntry.Kind（只有 info/tx/rx）；
                 // 错误级别走 level: —— `error` 是 LogEntry.Level 的成员，别传错位置。

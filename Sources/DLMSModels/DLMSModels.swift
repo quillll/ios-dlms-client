@@ -660,6 +660,52 @@ enum ParseBlock {
     }
 }
 
+// MARK: - 按量纲缩放显示
+
+/// 把读到的**原始值**按量纲缩放并附上单位。
+///
+/// 例：原值 `3456`、量纲 `-1`、单位 `kWh` → `345.6 kWh`。
+///
+/// 口径：
+/// - `scaling` 是**10 的指数**（`-1` ⇒ 原值 × 10⁻¹），与方案 §3.3 的
+///   「`value × 10^scaler` 做进展示层」一致；空/非整数 → **不缩放**。
+/// - 只对**纯数值**生效。非数值（`GRX3` / `true` / `41 42 43` 这类）**原样返回且不加单位** ——
+///   给一个字符串安上 kWh 是错的。
+/// - 小数位数**由指数决定**（-1 → 1 位，-3 → 3 位）：既符合物理含义，
+///   也顺带避开浮点噪声（`3456 × 10⁻¹` 实际是 `345.60000000000002`，
+///   按位格式化后正好是 `345.6`）。
+/// - 没配量纲时不擅自改小数位，原样输出（只可能追加单位）。
+///
+/// 注意：**只用于展示层**。解析面板仍显示原始值 —— 那里是"协议视角"，
+/// 换算过就看不到表实际吐出来的数字了。
+enum ValueScale {
+    static func display(raw: String, scaling: String, unit: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return text }
+
+        // 非数值 → 原样返回，**不加单位**
+        guard let value = Double(text) else { return text }
+
+        let exp = Int(scaling.trimmingCharacters(in: .whitespaces))
+
+        guard let exponent = exp else {
+            // 没配量纲：原样（保留原本的小数位），只按需追加单位
+            return unit.isEmpty ? text : "\(text) \(unit)"
+        }
+
+        let decimals = max(0, min(-exponent, 6))
+        let scaledValue = value * pow(10.0, Double(exponent))
+        var shown = String(format: "%.\(decimals)f", scaledValue)
+        // 去掉无意义的尾零（`100.0` → `100`、`3.450` → `3.45`）：
+        // 按位格式化是为了避开浮点噪声，不是为了强行凑满小数位。
+        if shown.contains(".") {
+            while shown.hasSuffix("0") { shown.removeLast() }
+            if shown.hasSuffix(".") { shown.removeLast() }
+        }
+        return unit.isEmpty ? shown : "\(shown) \(unit)"
+    }
+}
+
 // MARK: - 格式化小工具
 extension UInt32 {
     /// 2 位 hex（源/目标地址无 ANSI 前缀处理器）。

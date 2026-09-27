@@ -40,9 +40,17 @@ struct ObisLibraryView: View {
                             // 之前是「名称 · code」+「类N 属N」徽标 +「→ 数据」三行，
                             // 既和下拉不统一，请求数据还重复显示了一次。
                             Text(item.name.isEmpty ? item.code : item.name).font(.body)
-                            Text(item.identityLabel)
-                                .font(.caption).monospaced().foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            HStack(spacing: 5) {
+                                Text(item.identityLabel)
+                                    .font(.caption).monospaced().foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                // 单位只在**清单**里显示（下拉菜单保持纯身份格式）
+                                if !item.unit.isEmpty {
+                                    Text("· \(item.unit)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
                         }
                         Spacer(minLength: 4)
                         // **复制一条**：以本条为模板打开编辑器，保存时作为**新条目**插入
