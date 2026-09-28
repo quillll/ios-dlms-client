@@ -90,10 +90,18 @@ struct ObisLibraryView: View {
             }
             .toolbar { toolbarItems }
             .sheet(isPresented: $showEditor, onDismiss: {
-                // 每次关闭都清空两个源：下次打开必定是干净状态。
-                // （不清的话，上次编辑残留的 `editing` 会让下一次变成"编辑"模式。）
-                editing = nil
-                copySource = nil
+                // 关闭后清空两个源，让下次打开是干净状态。
+                //
+                // ⚠️ **必须判 `!showEditor`** —— 本视图上挂了多个 `.sheet`
+                //（编辑器 / 常用预置 / 文件导入），SwiftUI 在同一个视图挂多个 sheet 时，
+                // 别的 sheet 的关闭**会迟到触发本回调**。若此时用户已经点了「复制」，
+                // 这次迟到的清空就会把刚设好的 `copySource` 抹成 nil →
+                // 编辑器判定 `template == nil` → **点"复制"却弹出"添加 OBIS"**。
+                //（现象特征：只有"第一次"点击会错，之后正常 —— 迟到的回调只来一次。）
+                if !showEditor {
+                    editing = nil
+                    copySource = nil
+                }
             }) {
                 ObisEditorSheet(item: $editing, template: copySource).environmentObject(store)
             }
