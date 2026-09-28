@@ -78,6 +78,28 @@ if printf '%s' "$out" | grep -q "warning:"; then
   exit 1
 fi
 
+# ── 附加检查：跨 struct 引用 ──────────────────────────────────────────────
+# 起因：`ObisLibraryView.swift` 里两个 struct（ObisLibraryView / ObisEditorSheet），
+# 我在编辑器里写了 `copySource` —— 那是**外层 struct 的属性**，本类型看不到 →
+# CI 报 `cannot find 'copySource' in scope`。
+# 这类错误**只有 CI 能发现**（SwiftUI 本机编不了），一次往返约 5 分钟。
+# 本脚本只覆盖纯 Foundation 的三个文件，所以单独跑一遍全文检查。
+#
+# ⚠️ 该检查是**文本启发式**（不是类型检查），务必保持零误报：
+# 一旦它开始误报就会被无视。改动它之后**必须**做反向自测 ——
+# 注入一处真错误（例如把编辑器里的 `template` 改回 `copySource`）→ 必须 exit 1；
+# 恢复 → 必须 exit 0。
+PY_BIN="${PYTHON:-python}"
+if command -v "$PY_BIN" >/dev/null 2>&1; then
+  if ! "$PY_BIN" "$(dirname "$0")/chk_struct_scope.py"; then
+    echo
+    echo "[FAIL] 存在跨 struct 引用（本机编不出来，但 CI 会红）"
+    exit 1
+  fi
+else
+  echo "[skip] 未找到 python，跳过跨 struct 引用检查"
+fi
+
 echo
 echo "[OK] 类型检查通过，且无 warning"
 exit 0
