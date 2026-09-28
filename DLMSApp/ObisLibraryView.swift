@@ -378,7 +378,10 @@ struct ObisEditorSheet: View {
         // ⚠️ 用 `save` 而不是 `upsert`：前者只按 id 定位（编辑原地改、复制则追加），
         // 后者会按身份键覆盖 —— 复制一条时那会把**源条目改掉**。
         // 复制模式传源条目 id → 新条目**紧跟源条目**（原来插到清单最尾部，得滚半天找）
-        store.save(obis: it, after: copySource?.id)
+        // ⚠️ 编辑器里复制源叫 `template`（`copySource` 是**外层 ObisLibraryView 的属性**，
+        //    本类型看不到 —— CI 就是这么红的：cannot find 'copySource' in scope）。
+        //    它由 `ObisEditorSheet(item:template:)` 传进来。
+        store.save(obis: it, after: template?.id)
         dismiss()
     }
 }
