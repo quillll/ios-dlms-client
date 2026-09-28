@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBIS 清单 · 手动拖动排序 · UI 原型</title>
+<style>
+  :root{
+    --bg:#ececf0; --page:#f7f7fa; --card:#ffffff;
+    --sep:rgba(60,60,67,.13);
+    --label:#000; --label2:rgba(60,60,67,.6); --label3:rgba(60,60,67,.32);
+    --blue:#007aff; --green:#34c759; --orange:#ff9500; --purple:#af52de;
+    --red:#ff3b30; --teal:#30b0c7; --gray:#c7c7cc;
+  }
+  *{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--page); color:#1c1c1e;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    font-size:15px; line-height:1.5;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 24px 80px}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:-.4px}
+  h2{font-size:17px;margin:34px 0 10px;letter-spacing:-.2px}
+  .sub{color:var(--label2);font-size:13.5px;margin:0 0 4px}
+  .sub code{background:rgba(60,60,67,.08);padding:1px 5px;border-radius:4px;font-size:12.5px}
+
+  /* ── 手机框 ─────────────────────────────── */
+  .pair{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+  .phwrap{position:relative;width:330px;height:736px}
+  .phone{
+    width:390px;height:869px;background:#000;border-radius:52px;padding:11px;
+    box-shadow:0 18px 44px rgba(0,0,0,.20),0 2px 8px rgba(0,0,0,.10);
+    transform:scale(.846);transform-origin:top left;position:absolute;top:0;left:0;
+  }
+  .screen{width:100%;height:100%;background:var(--bg);border-radius:42px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  .cap{font-size:13px;font-weight:600;margin:0 0 8px;color:var(--label)}
+  .cap span{font-weight:400;color:var(--label2)}
+
+  .statusbar{height:44px;flex:0 0 44px;display:flex;align-items:flex-end;justify-content:space-between;padding:0 26px 4px;font-size:13px;font-weight:600}
+  .nav{flex:0 0 auto;padding:2px 16px 8px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--sep);background:var(--bg)}
+  .nav .big{font-size:31px;font-weight:700;letter-spacing:-.7px;flex:1}
+  .navbtn{color:var(--blue);font-size:17px;background:none;border:0;padding:0;font-family:inherit;font-weight:600}
+  .navbtn.off{color:var(--label3);font-weight:400}
+  .navbar span{font-size:17px;font-weight:600;flex:1;text-align:center}
+  .navic{color:var(--blue);font-size:17px}
+
+  /* 搜索框 */
+  .search{margin:8px 16px;height:36px;border-radius:10px;background:rgba(118,118,128,.12);
+          display:flex;align-items:center;gap:6px;padding:0 9px;color:var(--label3);font-size:15px}
+
+  /* ── 清单 ──────────────────────────────── */
+  .list{flex:1;overflow:hidden;background:var(--card);margin:8px 0 0;border-top:1px solid var(--sep);border-bottom:1px solid var(--sep)}
+  .li{display:flex;align-items:center;padding:9px 16px;border-bottom:1px solid var(--sep);background:var(--card);position:relative}
+  .li:last-child{border-bottom:0}
+  .li .txt{flex:1;min-width:0}
+  .li .t1{font-size:16px;color:var(--label);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .li .t2{font-size:12.5px;color:var(--label2);font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .li .acts{display:flex;gap:14px;color:var(--blue);font-size:16px;padding-left:8px}
+  .li .acts .ic{width:18px;text-align:center}
+  .del{width:22px;height:22px;border-radius:99px;background:var(--red);color:#fff;font-size:15px;font-weight:700;
+       line-height:20px;text-align:center;margin-right:10px;flex:0 0 22px}
+  .hnd{color:var(--label3);font-size:17px;margin-left:12px;flex:0 0 auto;letter-spacing:-2px;cursor:grab}
+
+  /* ── 可拖动演示区 ───────────────────────── */
+  .demo{max-width:520px;background:var(--card);border:1px solid var(--sep);border-radius:12px;overflow:hidden}
+  .demo .hd{padding:10px 14px;border-bottom:1px solid var(--sep);display:flex;align-items:center;gap:10px;font-size:13px;color:var(--label2)}
+  .demo .hd b{color:var(--label);font-size:13.5px}
+  .demo .hd .sp{flex:1}
+  .demo .foot{padding:9px 14px;border-top:1px solid var(--sep);font-size:12.5px;color:var(--label2);background:rgba(60,60,67,.03)}
+  .demo .foot code{background:rgba(60,60,67,.08);padding:1px 5px;border-radius:4px}
+
+  .dg{display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--sep);background:#fff;
+      position:relative;user-select:none}
+  .dg:last-of-type{border-bottom:0}
+  .dg .h{color:var(--label3);font-size:17px;margin-left:12px;letter-spacing:-2px;cursor:grab;touch-action:none}
+  .dg .txt{flex:1;min-width:0}
+  .dg .t1{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dg .t2{font-size:12px;color:var(--label2);font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dg .no{font-size:11px;color:var(--label3);font-family:ui-monospace,Consolas,monospace;margin-left:8px}
+  .dg.dragging{background:#f0f6ff;box-shadow:0 8px 22px rgba(0,0,0,.16);border-radius:10px;z-index:5;position:relative;border-bottom-color:transparent}
+  /* ── 编辑态布局：**删除在左、拖动在右**（分置两端防误触）──
+     原先两个都挤在左边、挨得很近，容易按错。
+     用 flex 的 `order` 重排即可，**不必改 DOM 顺序**： */
+  .li .del, .dg .del{order:1}
+  .li .txt, .dg .txt{order:2}
+  .li .hnd, .dg .h{order:3}
+  .dg .no{order:4}
+  /* ⚠️ 行内的「复制 / 编辑」按钮必须显式排到最后。
+     漏掉这种"没写 order"的元素时它默认是 0 → 会比 order:2 的正文还靠前，
+     按钮就跑到左边去了（第一版原型就是这么错的）。 */
+  .li .acts, .dg .acts{order:9}
+
+  .dg.dragging .h{cursor:grabbing}
+
+  /* ── 说明块 ─────────────────────────────── */
+  .notes{max-width:900px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--sep);vertical-align:top}
+  th{color:var(--label2);font-weight:600;font-size:12.5px;background:rgba(60,60,67,.03)}
+  td code{background:rgba(60,60,67,.08);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:99px;font-weight:600}
+  .tag.ok{background:rgba(52,199,89,.15);color:#1a7f37}
+  .tag.no{background:rgba(255,59,48,.13);color:#c1271d}
+  .tag.warn{background:rgba(255,149,0,.15);color:#a8620a}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>OBIS 清单 · 手动拖动排序 · UI 原型</h1>
+  <p class="sub">配合方案：<b>编辑模式拖动</b>（iOS 全版本可靠）＋ <b>搜索筛选时禁用排序</b>（避免下标错位）。</p>
+  <p class="sub">左起：现状 → 改进后（常态）→ 改进后（编辑态）。下面是<b>可实际拖动</b>的演示，先试手感再定。</p>
+
+  <!-- ─────────── 并排对照 ─────────── -->
+  <div class="pair">
+
+    <!-- ① 现状 -->
+    <div class="phwrap">
+      <p class="cap">① 现状 <span>· 只能滑动删除，顺序固定</span></p>
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+        <div class="nav">
+          <span class="big">OBIS 清单</span>
+          <button class="navbtn">✦</button>
+          <button class="navbtn">⤓</button>
+          <button class="navbtn">＋</button>
+        </div>
+        <div class="search">🔍 搜索名称或 OBIS 代码</div>
+        <div class="list">
+          <div class="li"><div class="txt">
+            <div class="t1">正向有功总电量</div><div class="t2">3*1.0.1.8.0.255*2 · kWh</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">进厂</div><div class="t2">1*0.0.202.8.0.255*2*12F001</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">A 相电压</div><div class="t2">3*1.0.32.7.0.255*2 · V</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">A 相电流</div><div class="t2">3*1.0.31.7.0.255*2 · A</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">设备 ID</div><div class="t2">1*0.0.96.1.0.255*2</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ② 改进后 · 常态 -->
+    <div class="phwrap">
+      <p class="cap">② 改进后 · 常态 <span>· 工具栏多一个「编辑」</span></p>
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+        <div class="nav">
+          <span class="big">OBIS 清单</span>
+          <button class="navbtn">✦</button>
+          <button class="navbtn">⤓</button>
+          <button class="navbtn">＋</button>
+          <button class="navbtn">编辑</button>
+        </div>
+        <div class="search">🔍 搜索名称或 OBIS 代码</div>
+        <div class="list">
+          <div class="li"><div class="txt">
+            <div class="t1">正向有功总电量</div><div class="t2">3*1.0.1.8.0.255*2 · kWh</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">进厂</div><div class="t2">1*0.0.202.8.0.255*2*12F001</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">A 相电压</div><div class="t2">3*1.0.32.7.0.255*2 · V</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">A 相电流</div><div class="t2">3*1.0.31.7.0.255*2 · A</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+          <div class="li"><div class="txt">
+            <div class="t1">设备 ID</div><div class="t2">1*0.0.96.1.0.255*2</div></div>
+            <div class="acts"><span class="ic">⧉</span><span class="ic">✎</span></div></div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ③ 改进后 · 编辑态 -->
+    <div class="phwrap">
+      <p class="cap">③ 改进后 · 编辑态 <span>· ⊖ 删除在左，≡ 拖动在最右（分置两端防误触）</span></p>
+      <div class="phone"><div class="screen">
+        <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
+        <div class="nav">
+          <span class="big" style="font-size:24px">OBIS 清单</span>
+          <button class="navbtn">完成</button>
+        </div>
+        <div class="list" style="margin-top:0">
+          <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
+            <div class="t1">正向有功总电量</div><div class="t2">3*1.0.1.8.0.255*2 · kWh</div></div></div>
+          <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
+            <div class="t1">进厂</div><div class="t2">1*0.0.202.8.0.255*2*12F001</div></div></div>
+          <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
+            <div class="t1">A 相电压</div><div class="t2">3*1.0.32.7.0.255*2 · V</div></div></div>
+          <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
+            <div class="t1">A 相电流</div><div class="t2">3*1.0.31.7.0.255*2 · A</div></div></div>
+          <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
+            <div class="t1">设备 ID</div><div class="t2">1*0.0.96.1.0.255*2</div></div></div>
+        </div>
+        <div class="foot" style="padding:10px 16px;font-size:12px;color:var(--label2);text-align:center">
+          按住 ≡ 拖动即可换位；完成后点「完成」退出
+        </div>
+      </div></div>
+    </div>
+
+  </div>
+
+  <!-- ─────────── 可拖动演示 ─────────── -->
+  <h2>试一下手感（真的能拖）</h2>
+  <div class="demo" id="demo">
+    <div class="hd">
+      <b>OBIS 清单</b><span class="sp"></span>
+      <span>编辑模式</span><button class="navbtn" id="doneBtn">完成</button>
+    </div>
+    <div id="rows"></div>
+    <div class="foot">拖动结束会写回 <code>obis.json</code>（数组顺序即显示顺序）。当前顺序：<span id="order"></span></div>
+  </div>
+
+  <!-- ─────────── 搜索时禁用 ─────────── -->
+  <h2>搜索筛选时：禁用排序</h2>
+  <div class="demo" style="max-width:520px">
+    <div class="hd">
+      <b>OBIS 清单</b><span class="sp"></span>
+      <span style="color:var(--label3)">编辑（置灰）</span>
+      <button class="navbtn off" disabled>编辑</button>
+    </div>
+    <div class="hd" style="border-bottom:0;background:rgba(255,149,0,.06);color:#a8620a">
+      ⚠️ 正在搜索「电压」—— 顺序已按筛选结果重排，此时拖动会错位，故禁用。
+    </div>
+    <div id="rows2"></div>
+  </div>
+
+  <!-- ─────────── 说明 ─────────── -->
+  <h2>为什么这么设计</h2>
+  <div class="notes">
+    <table>
+      <tr><th style="width:150px">决定</th><th>理由</th></tr>
+      <tr>
+        <td><b>用编辑模式</b><br><span class="tag warn">多一步点击</span></td>
+        <td>iOS 的 <code>List + onMove</code> 在<b>非</b>编辑模式下的拖动行为随版本而变；编辑模式是各版本一致的可靠路径。
+            而且它顺带把「已有的滑动删除」也变成看得见的 <b>⊖</b> 按钮 —— 现场戴手套/强光下比滑动手势好按。</td>
+      </tr>
+      <tr>
+        <td><b>筛选时禁用</b><br><span class="tag ok">避免写错下标</span></td>
+        <td>列表渲染的是 <code>filtered</code>（筛选结果），而拖动给出的下标是<b>筛选后</b>的位置。
+            直接拿去改底层数组会<b>删错/排错条目</b>。与其写一套下标映射，不如明确禁用 ——
+            而且「边搜边排序」本身也是少见需求。<br>
+            <span style="color:var(--label2)">兜底：一旦开始搜索就自动退出编辑模式，且拖动处理里再判一次空搜索。</span></td>
+      </tr>
+      <tr>
+        <td><b>顺序会持久化</b><br><span class="tag ok">已确认</span></td>
+        <td>加载时<b>没有任何排序</b>，数组顺序就是显示顺序，而 <code>obis.json</code> 存的就是这个数组
+            → 拖完写盘即可长期生效，不需要新增字段。</td>
+      </tr>
+      <tr>
+        <td><b>删除在左、拖动在最右</b><br><span class="tag ok">防误触</span></td>
+        <td>iOS 原生编辑态把 <b>⊖ 与 ≡ 都放在左端</b>、挨得很近，容易按错。
+            这里把<b>拖动手柄挪到行最右端</b>，两个图标分置两端 ——
+            按错的可能性基本消除，而且右手单手持机时拖动更顺手。</td>
+      </tr>
+      <tr>
+        <td><b>不做「上移/下移」按钮</b></td>
+        <td>你已选拖动；远距离移动（如第 30 位 → 第 1 位）用按钮要点 29 次。</td>
+      </tr>
+    </table>
+
+    <h2>已知取舍 / 需要你确认的点</h2>
+    <ul>
+      <li><b>编辑模式下，行内的「复制 / 编辑」按钮不能点</b>（iOS 在编辑模式会接管行的点击）。
+          也就是：排序和单条编辑是两个模式，不能同时干。接受吗？</li>
+      <li><b>工具栏会变成 4 个按钮</b>（✦ ⤓ ＋ 编辑）。窄屏上「编辑」可能被折进溢出菜单 ——
+          原型里按 4 个平铺画的，实机可能要调整顺序或改用文字按钮。这条<b>只有 CI/真机能定</b>。</li>
+      <li><b>拖动时不做跨屏自动滚动</b>（清单长于屏幕时，拖到边缘不会自动滚）。
+          iOS 原生 <code>List</code> 的 onMove 自带这个行为，若实测没有再加。</li>
+    </ul>
+  </div>
+
+</div>
+
+<script>
+// ── 可拖动演示：语义与 Swift 侧 ObisLibraryOps.moved 一致（插入到目标之前）──
+const DATA = [
+  { n:'正向有功总电量', d:'3*1.0.1.8.0.255*2 · kWh' },
+  { n:'进厂',           d:'1*0.0.202.8.0.255*2*12F001' },
+  { n:'A 相电压',       d:'3*1.0.32.7.0.255*2 · V' },
+  { n:'A 相电流',       d:'3*1.0.31.7.0.255*2 · A' },
+  { n:'设备 ID',        d:'1*0.0.96.1.0.255*2' },
+  { n:'总功率因数',     d:'3*1.0.13.7.0.255*2' },
+];
+let order = DATA.map((_, i) => i);
+
+const rows = document.getElementById('rows');
+const disp = document.getElementById('order');
+
+function render(container, ids, editable) {
+  container.innerHTML = '';
+  ids.forEach((id, pos) => {
+    const it = DATA[id];
+    const el = document.createElement('div');
+    el.className = 'dg';
+    el.dataset.idx = id;
+    el.innerHTML =
+      (editable ? '<span class="h">≡</span>' : '') +
+      '<div class="txt"><div class="t1">' + it.n + '</div><div class="t2">' + it.d + '</div></div>' +
+      '<span class="no">#' + (pos + 1) + '</span>';
+    container.appendChild(el);
+  });
+}
+
+function orderText() {
+  return order.map(i => DATA[i].n).join(' → ');
+}
+
+function paint() {
+  render(rows, order, true);
+  disp.textContent = orderText();
+}
+paint();
+render(document.getElementById('rows2'), [2], true);   // 搜索态只显示「A 相电压」
+
+// 指针拖动：拖过邻居中线就换位（iOS 的手感）
+let dragEl = null, dragId = -1, active = false;
+
+rows.addEventListener('pointerdown', (e) => {
+  const h = e.target.closest('.h');
+  if (!h) return;
+  dragEl = h.parentElement;
+  dragId = Number(dragEl.dataset.idx);
+  active = true;
+  dragEl.classList.add('dragging');
+  dragEl.setPointerCapture(e.pointerId);
+});
+
+rows.addEventListener('pointermove', (e) => {
+  if (!active || !dragEl) return;
+  const others = [...rows.querySelectorAll('.dg')].filter(el => el !== dragEl);
+  for (const other of others) {
+    const r = other.getBoundingClientRect();
+    const mid = r.top + r.height / 2;
+    const before = e.clientY < mid;
+    const otherTop = other.compareDocumentPosition(dragEl) & Node.DOCUMENT_POSITION_FOLLOWING;
+    if (before && !otherTop) { rows.insertBefore(dragEl, other); break; }        // 上移
+    if (!before && otherTop) { rows.insertBefore(dragEl, other.nextSibling); break; } // 下移
+  }
+});
+
+function endDrag() {
+  if (!active) return;
+  active = false;
+  if (dragEl) dragEl.classList.remove('dragging');
+  // 按 DOM 现序重建 order —— 与 Swift 侧"重排后写回数组"等价
+  order = [...rows.querySelectorAll('.dg')].map(el => Number(el.dataset.idx));
+  dragEl = null;
+  paint();
+}
+rows.addEventListener('pointerup', endDrag);
+rows.addEventListener('pointercancel', endDrag);
+
+document.getElementById('doneBtn').addEventListener('click', () => {
+  alert('（原型）点「完成」会退出编辑模式，回到常态工具栏。\n\n当前顺序：\n' + orderText());
+});
+</script>
+</body>
+</html>

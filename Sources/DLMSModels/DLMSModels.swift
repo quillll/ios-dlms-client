@@ -223,6 +223,54 @@ enum ObisLibraryOps {
         return out
     }
 
+    /// **新条目**该插到哪个下标。
+    ///
+    /// `afterID` 为 nil（新增/导入）或找不到 → 追加到尾部；能找到 → **插到它后面**。
+    ///
+    /// 用于"复制一条"：复制的条目通常要紧跟源条目看/改，
+    /// 插到尾部的话用户得滚半天才能找到它（原来就是这个行为）。
+    static func insertIndexForNewEntry(_ library: [ObisItem], after afterID: UUID?) -> Int {
+        guard let afterID else { return library.count }
+        guard let j = library.firstIndex(where: { $0.id == afterID }) else {
+            // 源条目已被删掉（复制后还没保存就删了源）→ 退回追加，不要报错
+            return library.count
+        }
+        return j + 1
+    }
+
+    /// 手工排序（拖动）：把 `fromOffsets` 指定的若干条移到 `toOffset` **之前**。
+    ///
+    /// 语义与 SwiftUI 的 `onMove` 一致：`to` 是**移动前**坐标系里的目标插入下标。
+    /// 例：`[a,b,c,d]` 把 `{0}` 移到 `to: 2` → `[b,a,c,d]`（a 插到 c 之前）。
+    ///
+    /// **为什么自己写而不用 `move(fromOffsets:toOffset:)`**：那个 API 定义在
+    /// **SwiftUI** 里（`MutableCollection` 的扩展），而 `DLMSModels` 不能依赖 SwiftUI
+    /// —— 一依赖，本机就再也编不了、只能等 CI。自己实现后这段逻辑**本机可实测**。
+    ///（代价是要自己处理"移动后目标位置要往前挪"这一步，见下面 insertAt 的计算。）
+    static func moved<T>(_ items: [T], fromOffsets: IndexSet, toOffset: Int) -> [T] {
+        // 公共入口，先兜住越界/乱序的入参（SwiftUI 正常会保证，但不值得赌）
+        let idx = fromOffsets.filter { $0 >= 0 && $0 < items.count }.sorted()
+        guard !idx.isEmpty else { return items }
+
+        var picked: [T] = []
+        picked.reserveCapacity(idx.count)
+        for i in idx { picked.append(items[i]) }
+
+        let pickedSet = Set(idx)
+        var rest: [T] = []
+        rest.reserveCapacity(items.count - idx.count)
+        for (i, v) in items.enumerated() where !pickedSet.contains(i) { rest.append(v) }
+
+        // 关键一步：`to` 是**移动前**的下标，而 `rest` 已经少了被移走的项，
+        // 所以要减去"目标之前被移走的条数"。漏掉这步就会差位。
+        var insertAt = max(0, min(toOffset, items.count))
+        for i in idx where i < insertAt { insertAt -= 1 }
+        insertAt = max(0, min(insertAt, rest.count))
+
+        rest.insert(contentsOf: picked, at: insertAt)
+        return rest
+    }
+
     /// 追加式列表（`logs` / `parseEntries`）的**高水位裁剪**：超过 `highWater` 时
     /// 返回应保留的**尾部 `limit` 条**；否则返回 `nil`。
     ///

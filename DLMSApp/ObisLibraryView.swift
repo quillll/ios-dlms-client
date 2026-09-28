@@ -19,6 +19,8 @@ struct ObisLibraryView: View {
     @State private var query = ""
     /// 复制（duplicate）模式的源条目；此时 `editing` 必须为 nil。
     @State private var copySource: ObisItem? = nil
+    /// 编辑（排序）模式。用 `EditButton` 切换；搜索时会被强制退出（见 `.onChange(of: query)`）。
+    @Environment(\.editMode) private var editMode
 
     var body: some View {
         NavigationStack {
@@ -73,9 +75,19 @@ struct ObisLibraryView: View {
                     .padding(.vertical, 7)
                 }
                 .onDelete(perform: delete)
+                // 拖动排序。**只在编辑模式下可用**（`EditButton` 切换）——
+                // 非编辑模式下 `List + onMove` 的拖动行为随 iOS 版本而变，
+                // 而 SwiftUI 本机编不了、无法自验，所以走各版本一致的编辑模式路径。
+                // 编辑态下：⊖ 删除在最左、≡ 拖动在最右（分置两端防误触，见 docs/OBIS排序原型.html）。
+                .onMove(perform: move)
             }
             .navigationTitle("OBIS 清单")
             .searchable(text: $query, prompt: "搜索名称或 OBIS 代码")
+            // 一开始搜索就退出编辑模式：此时列表渲染的是 `filtered`，
+            // 而拖动给的下标是**筛选后**的坐标，改底层数组会排错条目（`move` 里还有一道兜底）。
+            .onChange(of: query) { _ in
+                if !query.isEmpty { editMode?.wrappedValue = .inactive }
+            }
             .toolbar { toolbarItems }
             .sheet(isPresented: $showEditor, onDismiss: {
                 // 每次关闭都清空两个源：下次打开必定是干净状态。
@@ -113,7 +125,19 @@ struct ObisLibraryView: View {
             Button { showPresets = true } label: { Image(systemName: "sparkles") }
             Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
             Button { editing = nil; copySource = nil; showEditor = true } label: { Image(systemName: "plus") }
+            // 搜索时置灰：排序在筛选状态下会错位（见 `.onMove` 处的说明）
+            EditButton().disabled(!query.isEmpty)
         }
+    }
+
+    /// 编辑模式下的拖动排序。
+    ///
+    /// ⚠️ **筛选时直接不做** —— 列表渲染的是 `filtered`，`offsets` 是筛选后的坐标，
+    /// 拿去改 `obisLibrary` 会排错条目。UI 上已把 `EditButton` 置灰并在开始搜索时退出编辑态，
+    /// 这里是最后一道兜底（防止状态竞争下真的拖到）。
+    private func move(from: IndexSet, to: Int) {
+        guard query.isEmpty else { return }
+        store.moveObis(fromOffsets: from, toOffset: to)
     }
 
     private var presetSheet: some View {
@@ -353,7 +377,8 @@ struct ObisEditorSheet: View {
         it.attribute = at
         // ⚠️ 用 `save` 而不是 `upsert`：前者只按 id 定位（编辑原地改、复制则追加），
         // 后者会按身份键覆盖 —— 复制一条时那会把**源条目改掉**。
-        store.save(obis: it)
+        // 复制模式传源条目 id → 新条目**紧跟源条目**（原来插到清单最尾部，得滚半天找）
+        store.save(obis: it, after: copySource?.id)
         dismiss()
     }
 }

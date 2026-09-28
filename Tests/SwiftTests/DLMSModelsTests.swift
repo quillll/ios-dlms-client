@@ -425,6 +425,122 @@ final class ConfigCodableTests: XCTestCase {
     }
 }
 
+/// 拖动排序的纯逻辑（`Store.moveObis` 用它）。
+///
+/// 期望值**逐条对照 SwiftUI `move(fromOffsets:toOffset:)` 的标准结果**，
+/// 不是凭感觉写的 —— 我第一版就写错过一个（`{0,3} → 2`），见下面那条的注释。
+final class ObisReorderTests: XCTestCase {
+
+    private let letters = ["a", "b", "c", "d"]
+
+    private func moved(_ from: [Int], _ to: Int) -> [String] {
+        let v: [String] = ObisLibraryOps.moved(letters, fromOffsets: IndexSet(from), toOffset: to)
+        return v
+    }
+
+    func testMoveDown() {
+        XCTAssertEqual(moved([0], 2), ["b", "a", "c", "d"])
+    }
+
+    func testMoveToFront() {
+        XCTAssertEqual(moved([3], 0), ["d", "a", "b", "c"])
+    }
+
+    func testMoveToEnd() {
+        XCTAssertEqual(moved([0], 4), ["b", "c", "d", "a"])
+    }
+
+    /// 原地不动（`to` 等于自身下标）。
+    func testNoOpMoves() {
+        XCTAssertEqual(moved([1], 1), ["a", "b", "c", "d"])
+        XCTAssertEqual(moved([2], 2), ["a", "b", "c", "d"])
+    }
+
+    func testMoveTwoDown() {
+        XCTAssertEqual(moved([0, 1], 3), ["c", "a", "b", "d"])
+    }
+
+    func testMoveTwoToFront() {
+        XCTAssertEqual(moved([1, 2], 0), ["b", "c", "a", "d"])
+    }
+
+    /// ⚠️ 头尾两条一起移动到中间。
+    /// 先移除 `{0,3}` 得 `[b,c]`，再插到 `2 - 1 = 1` → `[b,a,d,c]`。
+    /// （我第一版把期望写成 `[b,a,c,d]` 是错的 —— 那相当于把 `d` 丢了。）
+    func testMoveTwoNonAdjacent() {
+        XCTAssertEqual(moved([0, 3], 2), ["b", "a", "d", "c"])
+    }
+
+    // MARK: 异常入参
+
+    func testEmptyOffsetsIsNoOp() {
+        XCTAssertEqual(moved([], 2), letters)
+    }
+
+    func testOutOfRangeSourceIsIgnored() {
+        XCTAssertEqual(moved([9], 1), letters)
+    }
+
+    func testOutOfRangeDestIsClamped() {
+        XCTAssertEqual(moved([2], -5), ["c", "a", "b", "d"])
+        XCTAssertEqual(moved([0], 999), ["b", "c", "d", "a"])
+    }
+
+    func testEmptyAndSingle() {
+        let e: [String] = ObisLibraryOps.moved([String](), fromOffsets: IndexSet([0]), toOffset: 0)
+        XCTAssertEqual(e, [])
+        XCTAssertEqual(ObisLibraryOps.moved(["x"], fromOffsets: IndexSet([0]), toOffset: 0), ["x"])
+    }
+}
+
+/// 复制条目要插到**源条目后面**（原来插到尾部，得滚半天才找得到）。
+final class ObisInsertAfterTests: XCTestCase {
+
+    private func mk(_ n: String) -> ObisItem {
+        ObisItem(code: "1.0.1.8.0.255", name: n, objectClass: 3)
+    }
+
+    private var lib: [ObisItem] { [mk("A"), mk("B"), mk("C")] }
+
+    func testAfterMiddle() {
+        let l = lib
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry(l, after: l[1].id), 2)
+    }
+
+    func testAfterFirst() {
+        let l = lib
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry(l, after: l[0].id), 1)
+    }
+
+    /// 源在末位 → 等于追加到尾部。
+    func testAfterLast() {
+        let l = lib
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry(l, after: l[2].id), 3)
+    }
+
+    /// `after = nil`（新增 / 导入）→ 追加到尾部。
+    func testNilAppendsToTail() {
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry(lib, after: nil), 3)
+    }
+
+    /// 源条目已被删掉 → 退回追加，**不报错**。
+    func testMissingSourceFallsBackToTail() {
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry(lib, after: UUID()), 3)
+    }
+
+    func testEmptyLibrary() {
+        XCTAssertEqual(ObisLibraryOps.insertIndexForNewEntry([ObisItem](), after: nil), 0)
+    }
+
+    /// 端到端形态：复制 B 插到 B 后面 → `A, B, B副本, C`。
+    func testCopyLandsRightAfterSource() {
+        var l = lib
+        let at = ObisLibraryOps.insertIndexForNewEntry(l, after: l[1].id)
+        l.insert(mk("B 副本"), at: at)
+        XCTAssertEqual(l.map { $0.name }, ["A", "B", "B 副本", "C"])
+    }
+}
+
 /// `Store` 里那批与 Combine 无关的判断（定位 / 去重 / 截断）。
 ///
 /// 为什么抽出来测：`Store` 是 `ObservableObject`（`import Combine`），

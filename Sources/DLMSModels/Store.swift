@@ -105,12 +105,24 @@ final class Store: ObservableObject {
     ///   ② 编辑 A 时若把它的 code 改成与 B 相同，`firstIndex` 按数组顺序可能命中 B
     ///      → 把 **B 覆盖掉**（B 在数组里靠前时就中招）。
     /// （见 `docs/DLMS调试台-方案.md` §20 与核对记录。）
-    func save(obis: ObisItem) {
+    /// - Parameter afterID: 新条目的插入位置（**插到它后面**）。
+    ///   传 nil（新增/导入）就是追加到尾部；"复制一条"会传源条目 id，
+    ///   这样复制出来的条目**紧跟在源条目下面**，而不是掉到清单最末尾。
+    func save(obis: ObisItem, after afterID: UUID? = nil) {
         if let i = ObisLibraryOps.locateForSave(obisLibrary, id: obis.id) {
             obisLibrary[i] = obis
         } else {
-            obisLibrary.append(obis)
+            let at = ObisLibraryOps.insertIndexForNewEntry(obisLibrary, after: afterID)
+            obisLibrary.insert(obis, at: at)
         }
+        persist()
+    }
+
+    /// **手动排序**（编辑模式下拖动）。顺序即 `obis.json` 的数组顺序，写盘后长期生效
+    ///（加载时不做任何排序，见 `obisLibrary` 的赋值处）。
+    func moveObis(fromOffsets: IndexSet, toOffset: Int) {
+        obisLibrary = ObisLibraryOps.moved(obisLibrary,
+                                           fromOffsets: fromOffsets, toOffset: toOffset)
         persist()
     }
 
