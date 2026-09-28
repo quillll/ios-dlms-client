@@ -19,8 +19,15 @@ struct ObisLibraryView: View {
     @State private var query = ""
     /// 复制（duplicate）模式的源条目；此时 `editing` 必须为 nil。
     @State private var copySource: ObisItem? = nil
-    /// 编辑（排序）模式。用 `EditButton` 切换；搜索时会被强制退出（见 `.onChange(of: query)`）。
-    @Environment(\.editMode) private var editMode
+    /// 排序（编辑）模式。**自己持有**，不用 `EditButton`。
+    ///
+    /// 为什么不用 `EditButton`：它只有一个 `init()`、**无法自定义外观**（Apple 文档确认），
+    /// 而工具栏其余三个都是纯线条图标 —— 混一个纯文字按钮不协调。
+    ///
+    /// 为什么自己持有也能出拖动手柄：Apple 文档明确「`onDelete`/`onMove` 的编辑控件
+    /// 在**编辑模式**下出现」，且「编辑模式可以**通过绑定设置**」——
+    /// 所以把 `$reorderMode` 注入环境即可，与 `EditButton` 做的事完全一致。
+    @State private var reorderMode: EditMode = .inactive
 
     var body: some View {
         NavigationStack {
@@ -80,13 +87,17 @@ struct ObisLibraryView: View {
                 // 而 SwiftUI 本机编不了、无法自验，所以走各版本一致的编辑模式路径。
                 // 编辑态下：⊖ 删除在最左、≡ 拖动在最右（分置两端防误触，见 docs/OBIS排序原型.html）。
                 .onMove(perform: move)
+                // 官方 API 的"禁止移动"：筛选状态下连拖都拖不动（第三层防护，见 `move`）
+                .moveDisabled(!query.isEmpty)
             }
+            // 把编辑模式注入给 List：拖动（≡）/删除（⊖）控件会在编辑模式下出现。
+            .environment(\.editMode, $reorderMode)
             .navigationTitle("OBIS 清单")
             .searchable(text: $query, prompt: "搜索名称或 OBIS 代码")
             // 一开始搜索就退出编辑模式：此时列表渲染的是 `filtered`，
             // 而拖动给的下标是**筛选后**的坐标，改底层数组会排错条目（`move` 里还有一道兜底）。
             .onChange(of: query) { _ in
-                if !query.isEmpty { editMode?.wrappedValue = .inactive }
+                if !query.isEmpty { reorderMode = .inactive }
             }
             .toolbar { toolbarItems }
             .sheet(isPresented: $showEditor, onDismiss: {
@@ -133,8 +144,18 @@ struct ObisLibraryView: View {
             Button { showPresets = true } label: { Image(systemName: "sparkles") }
             Button { showImporter = true } label: { Image(systemName: "square.and.arrow.down") }
             Button { editing = nil; copySource = nil; showEditor = true } label: { Image(systemName: "plus") }
-            // 搜索时置灰：排序在筛选状态下会错位（见 `.onMove` 处的说明）
-            EditButton().disabled(!query.isEmpty)
+            // 排序开关。**方案 A**：常态 `arrow.up.arrow.down`（与左侧三个同属纯线条），
+            // 编辑中用 `checkmark.circle.fill` —— 实心图标在四个线条图标里天然突出，
+            // 既是"完成"动作、又兼作"现在处于编辑态"的状态指示。
+            // 纯图标**必须自己补 accessibilityLabel**（`EditButton` 原本自带，换掉就没了）。
+            Button {
+                reorderMode = (reorderMode == .active) ? .inactive : .active
+            } label: {
+                Image(systemName: reorderMode == .active
+                      ? "checkmark.circle.fill" : "arrow.up.arrow.down")
+            }
+            .disabled(!query.isEmpty)
+            .accessibilityLabel(reorderMode == .active ? "完成排序" : "排序")
         }
     }
 

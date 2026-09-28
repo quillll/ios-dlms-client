@@ -151,7 +151,7 @@
 
     <!-- ② 改进后 · 常态 -->
     <div class="phwrap">
-      <p class="cap">② 改进后 · 常态 <span>· 工具栏多一个「编辑」</span></p>
+      <p class="cap">② 改进后 · 常态 <span>· 工具栏多一个排序图标（方案 A）</span></p>
       <div class="phone"><div class="screen">
         <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
         <div class="nav">
@@ -159,7 +159,7 @@
           <button class="navbtn">✦</button>
           <button class="navbtn">⤓</button>
           <button class="navbtn">＋</button>
-          <button class="navbtn">编辑</button>
+          <button class="navbtn"><span style="display:inline-flex;align-items:center;vertical-align:-3px"><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="#007aff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 4.5v11M7.5 4.5L5 7M7.5 4.5L10 7"/><path d="M12.5 15.5v-11M12.5 15.5L10 13M12.5 15.5L15 13"/></svg></span></button>
         </div>
         <div class="search">🔍 搜索名称或 OBIS 代码</div>
         <div class="list">
@@ -184,12 +184,12 @@
 
     <!-- ③ 改进后 · 编辑态 -->
     <div class="phwrap">
-      <p class="cap">③ 改进后 · 编辑态 <span>· ⊖ 删除在左，≡ 拖动在最右（分置两端防误触）</span></p>
+      <p class="cap">③ 改进后 · 编辑态 <span>· 图标变实心对勾（兼作状态指示）；⊖ 删除在左、≡ 拖动在最右</span></p>
       <div class="phone"><div class="screen">
         <div class="statusbar"><span>9:41</span><span>●●● ⌁ ▮</span></div>
         <div class="nav">
           <span class="big" style="font-size:24px">OBIS 清单</span>
-          <button class="navbtn">完成</button>
+          <button class="navbtn"><span style="display:inline-flex;align-items:center;vertical-align:-3px"><svg width="19" height="19" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.6" fill="#007aff"/><path d="M6.6 10.2l2.3 2.3 4.5-4.6" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
         </div>
         <div class="list" style="margin-top:0">
           <div class="li"><span class="del">−</span><span class="hnd">≡</span><div class="txt">
@@ -216,7 +216,7 @@
   <div class="demo" id="demo">
     <div class="hd">
       <b>OBIS 清单</b><span class="sp"></span>
-      <span>编辑模式</span><button class="navbtn" id="doneBtn">完成</button>
+      <span>编辑模式</span><button class="navbtn" id="doneBtn"><svg width="19" height="19" viewBox="0 0 20 20" style="vertical-align:-3px"><circle cx="10" cy="10" r="7.6" fill="#007aff"/><path d="M6.6 10.2l2.3 2.3 4.5-4.6" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </div>
     <div id="rows"></div>
     <div class="foot">拖动结束会写回 <code>obis.json</code>（数组顺序即显示顺序）。当前顺序：<span id="order"></span></div>
@@ -227,8 +227,8 @@
   <div class="demo" style="max-width:520px">
     <div class="hd">
       <b>OBIS 清单</b><span class="sp"></span>
-      <span style="color:var(--label3)">编辑（置灰）</span>
-      <button class="navbtn off" disabled>编辑</button>
+      <span style="color:var(--label3)">排序按钮置灰</span>
+      <button class="navbtn off" disabled><svg width="19" height="19" viewBox="0 0 20 20" fill="none" stroke="#c7c7cc" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M7.5 4.5v11M7.5 4.5L5 7M7.5 4.5L10 7"/><path d="M12.5 15.5v-11M12.5 15.5L10 13M12.5 15.5L15 13"/></svg></button>
     </div>
     <div class="hd" style="border-bottom:0;background:rgba(255,149,0,.06);color:#a8620a">
       ⚠️ 正在搜索「电压」—— 顺序已按筛选结果重排，此时拖动会错位，故禁用。
@@ -257,6 +257,14 @@
         <td><b>顺序会持久化</b><br><span class="tag ok">已确认</span></td>
         <td>加载时<b>没有任何排序</b>，数组顺序就是显示顺序，而 <code>obis.json</code> 存的就是这个数组
             → 拖完写盘即可长期生效，不需要新增字段。</td>
+      </tr>
+      <tr>
+        <td><b>工具栏用图标（方案 A）</b><br><span class="tag ok">已实施</span></td>
+        <td>工具栏其余三个都是纯线条图标（✦ ⤓ ＋），而 <code>EditButton</code> 是**纯文字**、且
+            只有一个 <code>init()</code> <b>无法自定义外观</b> → 混着不协调。<br>
+            改为自己的按钮：常态 <code>arrow.up.arrow.down</code>（同属线条），
+            编辑中用 <code>checkmark.circle.fill</code> —— <b>实心图标兼作"在编辑态"的状态指示</b>。<br>
+            纯图标必须自己补 <code>.accessibilityLabel</code>（<code>EditButton</code> 原本自带）。</td>
       </tr>
       <tr>
         <td><b>删除在左、拖动在最右</b><br><span class="tag ok">防误触</span></td>
