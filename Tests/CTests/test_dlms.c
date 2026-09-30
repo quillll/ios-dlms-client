@@ -10,6 +10,7 @@
 #include "DLMSCore.h"
 #include "variant.h"
 #include "enums.h"
+#include "gxmem.h"      // gxmalloc/gxfree：值树单测要按库的约定自己建 variantArray
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -392,7 +393,8 @@ static void test_render(void)
         v.byteArr = &bb;
         len = (int)sizeof(buf);
         CHECK(dlms_renderValue(&v, buf, &len) > 0, "render: octet-string(二进制) 渲染成功");
-        CHECK(strstr(buf, "（非文本）") != NULL, "render: 非文本 → 提示（非文本）");
+        CHECK(strstr(buf, "-> octet-string(3) 00 01 FF") != NULL,
+              "render: 非文本 octet-string → 值直接给 HEX 字节（不再是「（非文本）」）");
         CHECK(strstr(buf, "00 01 FF") != NULL, "render: 二进制 HEX 逐字节");
         bb_clear(&bb);
     }
@@ -406,9 +408,9 @@ static void test_render(void)
     len = 0;
     CHECK(dlms_renderValue(&v, buf, &len) == 0, "render: cap=0 安全");
 
-    // ── 两行格式 + 含类型标签的 HEX ──────────────────────────────────────────
+    // ── 叶子格式 + 含类型标签的 HEX ──────────────────────────────────────────
     // 直接把需求里给的例子钉成回归测试。
-    //   octet-string "123"  →  行1 `09 03 31 32 33`，行2 Type/Length/Value
+    //   octet-string "123"  →  行1 `09 03 31 32 33`，行2 = 类型(长度) + 值
     {
         static unsigned char s123[] = { 0x31, 0x32, 0x33 };
         gxByteBuffer bb;
@@ -420,9 +422,7 @@ static void test_render(void)
         len = (int)sizeof(buf);
         CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: octet-string 渲染成功");
         CHECK(strstr(buf, "09 03 31 32 33") != NULL, "render2: 行1 = 09 03 31 32 33");
-        CHECK(strstr(buf, "-> Type: octet-string") != NULL, "render2: 行2 类型名");
-        CHECK(strstr(buf, "Length: 3") != NULL, "render2: 行2 长度");
-        CHECK(strstr(buf, "Value: 123") != NULL, "render2: 行2 值");
+        CHECK(strstr(buf, "-> octet-string(3) 123") != NULL, "render2: 行2 = 类型(长度) + 值");
         bb_clear(&bb);
     }
     //   INT32 = 1  →  行1 `05 00 00 00 01`（tag 05 = double-long，Blue Book）
@@ -440,18 +440,18 @@ static void test_render(void)
     len = (int)sizeof(buf);
     CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: boolean 渲染成功");
     CHECK(strstr(buf, "03 01") != NULL, "render2: 行1 = 03 01");
-    CHECK(strstr(buf, "Value: true") != NULL, "render2: 行2 值 true");
+    CHECK(strstr(buf, "-> boolean true") != NULL, "render2: 行2 = -> boolean true；true/false 由渲染层给，不交库");
 
-    //   行数契约：**恰好两行**（将来多加/少加一行都必须被发现）
+    //  蓝本契约：**叶子恰好两行**（将来多加/少加一行都必须被发现）
     var_init(&v);
     v.vt = DLMS_DATA_TYPE_UINT16;
     v.uiVal = 0x1234;
     len = (int)sizeof(buf);
     CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: uint16 渲染成功");
-    CHECK(countChar(buf, '\n') == 2, "render2: 恰好两行");
+    CHECK(countChar(buf, '\n') == 2, "render2: 叶子恰好两行");
     CHECK(strstr(buf, "12 12 34") != NULL, "render2: 行1 = 12 12 34");
-    CHECK(strstr(buf, "-> Type: long-unsigned, Value: ") != NULL,
-          "render2: 行2 结构 = -> Type: <名>, Value: <值>（定长类型无 Length）");
+    CHECK(strstr(buf, "-> long-unsigned 4660") != NULL,
+          "render2: 行2 = -> <类型> <值>（定长类型无长度）");
 
     // visible-string：0x0A。注意 DLMS 里 0x09 是 octet-string，0x0A 才是 visible-string
     {
@@ -465,7 +465,7 @@ static void test_render(void)
         len = (int)sizeof(buf);
         CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: visible-string 渲染成功");
         CHECK(strstr(buf, "0A 03 41 42 43") != NULL, "render2: 行1 = 0A 03 41 42 43");
-        CHECK(strstr(buf, "Value: ABC") != NULL, "render2: 行2 值 ABC");
+        CHECK(strstr(buf, "-> visible-string(3) ABC") != NULL, "render2: 行2 = 类型(长度) + 值 ABC");
         bb_clear(&sb);
     }
 
@@ -505,9 +505,198 @@ static void test_render(void)
         len = (int)sizeof(buf);
         CHECK(dlms_renderValue(&v, buf, &len) > 0, "render2: 128 字节 octet-string 渲染成功");
         CHECK(strstr(buf, "09 81 80") != NULL, "render2: ≥128 长度用多字节编码（09 81 80）");
-        CHECK(strstr(buf, "Length: 128") != NULL, "render2: 行2 Length = 128");
+        CHECK(strstr(buf, "-> octet-string(128) ") != NULL, "render2: 行2 长度 = 128");
         bb_clear(&bb);
     }
+}
+
+// ── 值树渲染（v1.8）────────────────────────────────────────────────────────
+// 复合类型改为逐字段成行：`-> array(1)` / `└─ [0] structure(4)` / 叶子行 =
+// `下标 + 类型(长度) + 值`，同一层的类型列按最宽者补齐。
+//
+// 构造方式与库一致（variant.c 的解析路径）：子节点 gxmalloc + var_init，
+// 容器用 va_init/va_push，最后 var_clear 父节点就会把 Arr/子节点/byteArr 一起释放。
+static dlmsVARIANT* treePush(variantArray* arr)
+{
+    dlmsVARIANT* it = (dlmsVARIANT*)gxmalloc(sizeof(dlmsVARIANT));
+    var_init(it);
+    (void)va_push(arr, it);
+    return it;
+}
+
+static variantArray* treeNewArray(void)
+{
+    variantArray* arr = (variantArray*)gxmalloc(sizeof(variantArray));
+    va_init(arr);
+    return arr;
+}
+
+/// 数组/结构逐层展开 + 类型列对齐
+static void test_render_tree(void)
+{
+    dlmsVARIANT root;
+    dlmsVARIANT* row;
+    dlmsVARIANT* f;
+    static unsigned char oid[] = { 0x01, 0x00, 0x8C, 0x81, 0x00, 0xFF };
+    char buf[2048];
+    int len;
+
+    // array(1) → structure(4) { long-unsigned 3, octet-string(6) 01 00 8C 81 00 FF,
+    //                           integer 2, long-unsigned 0 }
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+
+    row = treePush(root.Arr);
+    row->vt = DLMS_DATA_TYPE_STRUCTURE;
+    row->Arr = treeNewArray();
+
+    f = treePush(row->Arr); var_setUInt16(f, 3);
+    f = treePush(row->Arr); (void)var_addBytes(f, oid, (uint16_t)sizeof(oid));
+    f = treePush(row->Arr); f->vt = DLMS_DATA_TYPE_INT8; f->cVal = 2;
+    f = treePush(row->Arr); var_setUInt16(f, 0);
+
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0, "tree: 渲染成功");
+    printf("--- 值树样例 ---\n%s----------------\n", buf);
+
+    CHECK(strstr(buf, "-> array(1)") != NULL, "tree: 顶层给类型 + 元素个数");
+    CHECK(strstr(buf, "└─ [0] structure(4)") != NULL, "tree: 子结构带下标");
+    // 1 行 HEX + 1 行顶层 + 1 行 structure + 4 行叶子 = 7 个换行
+    CHECK(countChar(buf, '\n') == 7, "tree: 行数 = 2 + 1 + 4");
+    CHECK(strstr(buf, "long-unsigned   3") != NULL,
+          "tree: 类型列按最宽的 octet-string(6) 补齐（long-unsigned 后补 2 空格）");
+    CHECK(strstr(buf, "octet-string(6) 01 00 8C 81 00 FF") != NULL,
+          "tree: 变长类型带字节数，值给 HEX");
+    CHECK(strstr(buf, "integer         2") != NULL, "tree: 定长类型不带长度");
+    CHECK(strstr(buf, "[3] long-unsigned   0") != NULL, "tree: 最后一行用 └─ 收尾");
+    CHECK(strstr(buf, "输出已截断") == NULL, "tree: 正常收尾不得报「已截断」");
+
+    var_clear(&root);      // 整棵树随之释放（Arr/子节点/octet-string 的 byteArr）
+}
+
+/// 连续同值的定长叶子折叠；不足阈值或类型不同则不折
+static void test_render_tree_fold(void)
+{
+    dlmsVARIANT root;
+    dlmsVARIANT* f;
+    char buf[2048];
+    int len, k;
+
+    // array(5) 全等 → 折成一行
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    for (k = 0; k < 5; ++k) { f = treePush(root.Arr); var_setUInt16(f, 0); }
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0, "fold: 渲染成功");
+    CHECK(strstr(buf, "[0..4]") != NULL && strstr(buf, "long-unsigned ×5") != NULL,
+          "fold: 连续 5 个同值 → 折成 [0..4] ×5");
+    CHECK(countChar(buf, '\n') == 3, "fold: 折后只剩 1 行叶子");
+    var_clear(&root);
+
+    // array(2) 全等 → 不足 TREE_FOLD_MIN(3)，不折
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    for (k = 0; k < 2; ++k) { f = treePush(root.Arr); var_setUInt16(f, 0); }
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0, "fold: 2 个同值渲染成功");
+    CHECK(strstr(buf, "[0..") == NULL, "fold: 只有 2 个同值 → 不折");
+    CHECK(strstr(buf, "[0] long-unsigned 0") != NULL &&
+          strstr(buf, "[1] long-unsigned 0") != NULL, "fold: 两个下标各占一行");
+    var_clear(&root);
+
+    // array(5)：值都是 0 但类型不同 → 不能跨类型折；尾部 3 个同类型同值仍然折
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    f = treePush(root.Arr); var_setUInt16(f, 0);
+    f = treePush(root.Arr); f->vt = DLMS_DATA_TYPE_INT8; f->cVal = 0;
+    f = treePush(root.Arr); var_setUInt16(f, 0);
+    f = treePush(root.Arr); var_setUInt16(f, 0);
+    f = treePush(root.Arr); var_setUInt16(f, 0);
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0, "fold: 混合类型渲染成功");
+    CHECK(strstr(buf, "[0..") == NULL, "fold: 值同为 0 但类型不同 → 不折");
+    CHECK(strstr(buf, "[2..4]") != NULL, "fold: 尾部同类型同值仍然折");
+    var_clear(&root);
+
+    // 空数组：只有类型行，不崩
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0 &&
+          strstr(buf, "-> array(0)") != NULL, "fold: 空数组只给类型行");
+    var_clear(&root);
+}
+
+/// 两个软上限：嵌套深度 TREE_MAX_DEPTH(16) 与输出字节 TREE_MAX_BYTES(60000)
+/// —— 都只标注、不崩，且标注只在**真的停了**时出现。
+static void test_render_tree_limits(void)
+{
+    dlmsVARIANT root;
+    dlmsVARIANT* f;
+    char buf[2048];
+    static char big[70000];
+    int len, k;
+
+    // ① 嵌套 20 层 → 最深一层换成「…（嵌套过深，已省略）」，其余照常展开
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    {
+        dlmsVARIANT* parent = &root;
+        for (k = 0; k < 20; ++k)
+        {
+            dlmsVARIANT* box = treePush(parent->Arr);
+            box->vt = DLMS_DATA_TYPE_ARRAY;
+            box->Arr = treeNewArray();
+            parent = box;
+        }
+        f = treePush(parent->Arr);
+        var_setUInt16(f, 7);
+    }
+    len = (int)sizeof(buf);
+    CHECK(dlms_renderValue(&root, buf, &len) > 0, "limit: 20 层嵌套渲染成功（不递归爆栈）");
+    CHECK(strstr(buf, "嵌套过深") != NULL, "limit: 超过 16 层 → 标注已省略");
+    // 单链嵌套里每一层都是「末位」，祖先列必须留白（TREE_INDENT）——
+    // 提示行若不分 lastFlags 一律画竖线，这里就会命中。
+    CHECK(strstr(buf, "│") == NULL, "limit: 末位祖先留白，提示行不得多画竖线");
+    CHECK(strstr(buf, "输出已截断") == NULL, "limit: 只是深层省略时不得报字节截断");
+    var_clear(&root);
+
+    // ② 3000 个**各不相同**的定长叶子 → 输出必超 60000（值不同才不会折叠）
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    for (k = 0; k < 3000; ++k)
+    {
+        f = treePush(root.Arr);
+        var_setUInt16(f, (uint16_t)k);
+    }
+    len = (int)sizeof(big);
+    CHECK(dlms_renderValue(&root, big, &len) > 0, "limit: 超长树渲染成功");
+    CHECK(strstr(big, "输出已截断") != NULL, "limit: 超 60000 字节 → 标注已截断");
+    CHECK(strstr(big, "[2999]") == NULL, "limit: 确实提前收尾（末元素没输出）");
+    var_clear(&root);
+
+    // ③ 同样装法但没到上限：必须完整、且**不得**出现截断标注
+    //    （条件若写成 `bb.size >= TREE_MAX_BYTES`，正常收尾也会误报）
+    var_init(&root);
+    root.vt = DLMS_DATA_TYPE_ARRAY;
+    root.Arr = treeNewArray();
+    for (k = 0; k < 500; ++k)
+    {
+        f = treePush(root.Arr);
+        var_setUInt16(f, (uint16_t)k);
+    }
+    len = (int)sizeof(big);
+    CHECK(dlms_renderValue(&root, big, &len) > 0, "limit: 未超限的树渲染成功");
+    CHECK(strstr(big, "[499]") != NULL, "limit: 未超限 → 末元素完整输出");
+    CHECK(strstr(big, "输出已截断") == NULL, "limit: 未超限 → 不标注截断");
+    var_clear(&root);
 }
 
 // ── 写 / action 路径的 variant 构造 ────────────────────────────────────────────
@@ -587,6 +776,9 @@ int main(void)
     printf("[ctx]\n"); test_ctx();
     printf("[variant]\n"); test_variant();
     printf("[render]\n"); test_render();
+    printf("[tree]\n"); test_render_tree();
+    printf("[tree-fold]\n"); test_render_tree_fold();
+    printf("[tree-limits]\n"); test_render_tree_limits();
     printf("[writevar]\n"); test_writevar();
     // 回放测试：桩 send/recv + **自造**合法帧，跑 dlms_initialize 的完整协议流程
     //（SNRM/UA → AARQ/AARE → HLS 应答），覆盖到此前从未被调用的路径。

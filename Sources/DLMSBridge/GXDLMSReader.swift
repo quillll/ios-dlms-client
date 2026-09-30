@@ -130,7 +130,11 @@ final class GXDLMSReader {
 
     /// 读/写/执行的输出缓冲上限。C 层 `replyValueString` 按 `cap-1` 截断写入，
     /// 原来只有 512 字节 → 长响应会被静默截断。这里给足余量。
-    private static let outBufferSize = 4096
+    ///
+    /// 4096 曾经也够，因为复合类型只在**一行**里压平输出；改成值树后每字段一行，
+    /// 59 条采集对象（每条 5 行）就要十几 KB —— 4096 必然截断，故放大到 64KB。
+    /// （C 层另有 60000 字节软上限，会在树里自己标注"已截断"，不会撑爆这里。）
+    private static let outBufferSize = 65536
 
     private func syncRun(op: DLMSOp?, obis: [UInt8]?, classVal: Int, attr: Int, hex: String?) throws -> String {
         transport.recvTimeoutMs = max(config.recvTimeoutMs, 500)

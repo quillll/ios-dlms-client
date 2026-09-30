@@ -994,51 +994,68 @@ final class ObisIdentityKeyTests: XCTestCase {
     }
 }
 
-/// C 层 `dlms_renderValue` 的两行块 → 取纯值（状态栏回显用）。
+/// C 层 `dlms_renderValue` 的值树块 → 取纯值（状态栏回显用）。
 /// 样例按 `DLMSBridge.c` 里 `dlms_renderValue` 的**实际输出格式**构造，不是手抄报文。
 final class ParseBlockTests: XCTestCase {
 
     func testOctetString() {
-        let v: String? = ParseBlock.valuePart(of: "09 04 47 52 58 33\n-> Type: octet-string, Length: 4, Value: GRX3\n")
+        let v: String? = ParseBlock.valuePart(of: "09 04 47 52 58 33\n-> octet-string(4) GRX3\n")
         XCTAssertEqual(v, "GRX3")
     }
 
     func testUnsignedWithoutLengthSegment() {
-        let v: String? = ParseBlock.valuePart(of: "06 00 00 00 00 01 23 45\n-> Type: unsigned, Value: 74565\n")
+        let v: String? = ParseBlock.valuePart(of: "06 00 00 00 00 01 23 45\n-> unsigned 74565\n")
         XCTAssertEqual(v, "74565")
     }
 
     func testBoolean() {
-        let v: String? = ParseBlock.valuePart(of: "01 01 FF\n-> Type: boolean, Value: true\n")
+        let v: String? = ParseBlock.valuePart(of: "01 01 FF\n-> boolean true\n")
         XCTAssertEqual(v, "true")
     }
 
-    /// 只有一行（无换行）也要能取到。
+    /// 只有 `-> ` 那一行（无换行）也要能取到。
     func testSingleLine() {
-        let v: String? = ParseBlock.valuePart(of: "-> Type: unsigned, Value: 42")
+        let v: String? = ParseBlock.valuePart(of: "-> unsigned 42")
         XCTAssertEqual(v, "42")
     }
 
-    /// 值里本身带 ", " —— 必须切在第一个 `, Value: ` 之后，不能被后面的逗号截断。
-    func testValueContainingComma() {
-        let v: String? = ParseBlock.valuePart(of: "12 02 00 01\n-> Type: structure, Value: 1, 2\n")
-        XCTAssertEqual(v, "1, 2")
+    /// 复合类型没有单值：`-> array(1)` 之后全是缩进子行，不能拿某一行子值当结果。
+    func testCompositeReturnsNil() {
+        let block = """
+        01
+        -> array(1)
+        └─ [0] structure(2)
+           ├─ [0] long-unsigned 1
+           └─ [1] long-unsigned 2
+        """
+        XCTAssertNil(ParseBlock.valuePart(of: block))
+    }
+
+    /// 空复合类型（只有类型行）同样返回 nil。
+    func testEmptyCompositeReturnsNil() {
+        XCTAssertNil(ParseBlock.valuePart(of: "01\n-> array(0)\n"))
+    }
+
+    /// 非文本 octet-string 的值是一串 HEX —— 原样取出，不当数字处理。
+    func testNonPrintableOctetStringKeepsHex() {
+        let v: String? = ParseBlock.valuePart(of: "09 06 01 00 8C 81 00 FF\n-> octet-string(6) 01 00 8C 81 00 FF\n")
+        XCTAssertEqual(v, "01 00 8C 81 00 FF")
     }
 
     func testValueContainingSpaces() {
-        let v: String? = ParseBlock.valuePart(of: "0F 06 41 42 43 44 45 46\n-> Type: bit-string, Length: 6, Value: 41 42 43\n")
+        let v: String? = ParseBlock.valuePart(of: "0F 06 41 42 43 44 45 46\n-> bit-string(6) 41 42 43\n")
         XCTAssertEqual(v, "41 42 43")
     }
 
     /// 实测踩过：`CharacterSet.whitespaces` **不含 `\r`**（`\r` 属于 `.newlines`），
     /// 用 .whitespaces 时 CRLF 会在值尾部残留 "\r"。
     func testCrlfIsTrimmed() {
-        let v: String? = ParseBlock.valuePart(of: "AA BB\r\n-> Type: unsigned, Value: 9\r\n")
+        let v: String? = ParseBlock.valuePart(of: "AA BB\r\n-> unsigned 9\r\n")
         XCTAssertEqual(v, "9")
     }
 
     func testTrailingBlankLines() {
-        let v: String? = ParseBlock.valuePart(of: "AA BB\n-> Type: unsigned, Value: 7\n\n")
+        let v: String? = ParseBlock.valuePart(of: "AA BB\n-> unsigned 7\n\n")
         XCTAssertEqual(v, "7")
     }
 
@@ -1046,5 +1063,6 @@ final class ParseBlockTests: XCTestCase {
         XCTAssertNil(ParseBlock.valuePart(of: "09 04 47 52 58 33"))   // 只有行 1
         XCTAssertNil(ParseBlock.valuePart(of: ""))
         XCTAssertNil(ParseBlock.valuePart(of: "\n"))
+        XCTAssertNil(ParseBlock.valuePart(of: "└─ [0] long-unsigned 1"))   // 只有缩进子行
     }
 }

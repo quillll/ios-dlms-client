@@ -237,24 +237,24 @@ int main(int argc, char** argv)
         out[0] = '\0';
         r2 = dlms_read(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2, out, &outLen);
         printf("[e2e] read ret=%d(%s) outLen=%d\n", r2, dlms_error_string(r2), outLen);
-        // 把**解析出来的值**打出来。只断言"ret==0 且有 -> Type/Value 两行"是不够的 ——
+        // 把**解析出来的值**打出来。只断言"ret==0 且有 -> 行"是不够的 ——
         // 桩若把响应的类型/长度字节写错，解析出的可能是个**空数组**之类的空壳，
         // 照样满足那两条断言（实测踩过：与 SET 同源的布局错误）。
         printf("[e2e] read 解析结果:\n%s\n", out);
         printf("  ·  dlms_read 已返回（未崩溃/未挂死）\n");
         CHECK(r2 == DLMS_ERROR_CODE_OK && outLen > 0,
               "e2e: dlms_read 端到端成功（收到响应并渲染出可读文本）");
-        CHECK(strstr(out, "-> Type: ") != NULL && strstr(out, ", Value: ") != NULL,
-              "e2e: 解析面板拿到两行块（含类型标签 HEX + -> Type/Value）");
-        // ★ 断言**解析出来的值本身**，而不只是"有两行"。
+        CHECK(strstr(out, "\n-> ") != NULL,
+              "e2e: 解析面板拿到值树块（含类型标签 HEX + -> 类型行）");
+        // ★ 断言**解析出来的值本身**，而不只是"有类型行"。
         //
-        // 只验"ret==0 且有 Type/Value 两行"是不够的：桩的 Get-Response 布局曾写错
+        // 只验"ret==0 且有 -> 行"是不够的：桩的 Get-Response 布局曾写错
         // （`C4 01 C1 00 01 00 09 01 2A`），解析出的"值"其实是 **`01 00` = 空数组**，
-        // 渲染成 `-> Type: array, Value: {}` —— 两行齐全、ret=0，**断言全过但值是空的**。
+        // 渲染成 `-> array(0)` —— ret=0、断言全过但值是空的。
         // 改成正确布局 `C4 01 01 00 09 01 2A` 后才真解析出 octet-string(0x2A)。
         CHECK(strstr(out, "09 01 2A") != NULL && strstr(out, "octet-string") != NULL
-              && strstr(out, "Value: *") != NULL,
-              "e2e: dlms_read 解析出的值正确（09 01 2A -> octet-string \"*\"）");
+              && strstr(out, "-> octet-string(1) *") != NULL,
+              "e2e: dlms_read 解析出的值正确（09 01 2A -> -> octet-string(1) \"*\"）");
 
         outLen = (int)sizeof(out);
         r3 = dlms_write(c, OBIS_ASSOC, DLMS_OBJECT_TYPE_ASSOCIATION_LOGICAL_NAME, 2,

@@ -747,29 +747,37 @@ enum ObisUtil {
 
 // MARK: - 解析面板块的取值
 
-/// 解析 C 层 `dlms_renderValue` 产出的**两行块**。
+/// 解析 C 层 `dlms_renderValue` 产出的**值树块**。
 ///
 /// 该格式由**单一生产者**约定（`DLMSBridge.c` 的 `dlms_renderValue`）：
-///   行 1 = 带类型标签的 HEX
-///   行 2 = `-> Type: <类型名>[, Length: n], Value: <可读值>`
+///   行 1    = 带类型标签的 HEX
+///   行 2 起 = `-> <类型>[(长度)] [值]`；复合类型（array/structure）只给类型，
+///             随后逐字段缩进成行
 ///
-/// 所以按 `", Value: "` 切分是**确定性的** —— 这不是"从自由文本里猜值"。
+/// 所以"取第一个 `-> ` 行的**类型头之后**的内容"是**确定性的** ——
+/// 这不是"从自由文本里猜值"：类型名里不含空格（`long-unsigned` / `octet-string`），
+/// 长度括号紧跟其后，第一个空格之后必是值。
+/// 缩进行以 `├─`/`└─`/空格开头，永远不会被误判成 `-> ` 行。
+///
 /// （状态栏要用「纯值」回显刚读到的结果，见 `docs/UI评审-核对报告.md` 的 B1。）
 enum ParseBlock {
-    /// 取纯值（如 `GRX3` / `123.4`）；取不到返回 nil，调用方回退为「不显示值」。
+    /// 取纯值（如 `GRX3` / `74565`）。
+    /// 复合类型（`-> array(1)`）没有单值可取 → nil，调用方回退为「不显示值」。
     static func valuePart(of block: String) -> String? {
-        var lastLine = ""
         for line in block.split(separator: "\n") {
-            lastLine = String(line)
+            // 用 .whitespacesAndNewlines 而非 .whitespaces：后者**不含 `\r`**
+            //（`\r` 属于 .newlines）—— 若数据里是 CRLF，值尾部会残留一个 `\r`。
+            // C 层目前只发 LF，但这里顺手挡住（实测过：用 .whitespaces 时 "9\r" != "9"）。
+            let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.hasPrefix("-> ") else { continue }
+            let body = text.dropFirst(3)
+            // 没有第二个空格 ⇒ 这行只有类型头 ⇒ 复合类型，没有单值
+            guard let sep = body.firstIndex(of: " ") else { return nil }
+            let raw = body[body.index(after: sep)...]
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
         }
-        guard !lastLine.isEmpty else { return nil }
-        guard let found = lastLine.range(of: ", Value: ") else { return nil }
-        let raw = String(lastLine[found.upperBound...])
-        // 用 .whitespacesAndNewlines 而非 .whitespaces：后者**不含 `\r`**
-        //（`\r` 属于 .newlines）—— 若数据里是 CRLF，值尾部会残留一个 `\r`。
-        // C 层目前只发 LF，但这里顺手挡住（实测过：用 .whitespaces 时 "9\r" != "9"）。
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
+        return nil
     }
 }
 

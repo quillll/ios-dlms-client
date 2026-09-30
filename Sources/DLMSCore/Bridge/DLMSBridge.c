@@ -649,9 +649,11 @@ static void bbAppendStr(gxByteBuffer* bb, const char* s)
     }
 }
 
+static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb);
+
 // 可读渲染：
 //   boolean → true/false
-//   octet-string → 全可打印则按 ASCII 文本（如序列号），否则提示看 HEX
+//   octet-string → 全可打印则按 ASCII 文本（如序列号），否则给 HEX 字节
 //   visible-string / utf8-string → 直接文本
 //   其它（数值、时间、复合类型）→ 交给 var_toString（它本身就会给出可读表示）
 static void appendReadable(dlmsVARIANT* v, gxByteBuffer* bb)
@@ -680,8 +682,9 @@ static void appendReadable(dlmsVARIANT* v, gxByteBuffer* bb)
                 return;
             }
         }
-        // 新格式下行1 就是 HEX，这里再写"见 HEX"会含糊
-        bbAppendStr(bb, "（非文本）");
+        // 不可打印的 octet-string（如 12 字节的曲线时间戳）给 HEX 字节。
+        // 原来这里写的是"（非文本）"—— 等于什么都没说，值本身还是看不到。
+        appendHex(v, bb);
         return;
     case DLMS_DATA_TYPE_STRING:
     case DLMS_DATA_TYPE_STRING_UTF8:
@@ -752,15 +755,12 @@ static void appendHex(dlmsVARIANT* v, gxByteBuffer* bb)
     }
 }
 
-// 把 1 个值渲染成多行文本（UI 的"解析"面板直接显示）：
-//   类型   long-unsigned (18)
-//   值     1234
-//   可读   1234
-//   HEX    04 D2
+// 把 1 个值渲染成多行文本（UI 的"解析"面板直接显示）。
 //
 // **故意不加 static**：让 C 单测能直接构造 dlmsVARIANT 断言渲染结果
 //（见 Tests/CTests/test_dlms.c 的 [render] 段）。生产路径由下面的
 // replyValueString() 调用，不对外暴露到 DLMSCore.h（避免 Swift 侧多看到 C 类型）。
+//
 // 变长类型：编码里带显式长度字节（Blue Book 的 octet-string / visible-string /
 // utf8-string / bit-string 都是 tag + 长度 + 内容）。
 static int hasExplicitLength(DLMS_DATA_TYPE vt)
@@ -872,9 +872,311 @@ static void appendTypedHex(dlmsVARIANT* v, gxByteBuffer* bb)
     }
 }
 
-// 渲染为**两行**（UI 的"解析"面板直接显示；"解析使能"关闭时只取第一行）：
+// ── 值树渲染（v1.8）────────────────────────────────────────────────────
+// 起因：array/structure 原来交给 var_toString 压成一行 `{{...}}`，
+// 读 7 类曲线这类嵌套报文时看不出层级和字段边界（对齐 PC 端调试工具的展示方式）。
+//
+//   行 1   `01`                                  ← 带类型标签的原始 HEX（不变）
+//   行 2   `-> array(1)`                         ← 顶层：类型 + 元素个数 / 长度
+//   其后   `└─ [0] structure(23)`
+//          `   ├─ [0]    octet-string(12)  07 EA 09 1E 03 08 2C 00 00 FE 5C 02`
+//          `   └─ [22]   long-unsigned     0`
+//
+// · 叶子行 = 下标 + 类型(长度) + 值；同一层的类型列按最宽者补齐，便于竖着扫。
+// · 连续 ≥ TREE_FOLD_MIN 个「同类型同值」的定长叶子折叠为 `[起..止] 类型 ×N`
+//   —— 曲线数据里大片 0 很常见，折叠能省掉几十行。
+// · 括号里的长度只给复合类型（元素个数）和变长类型（字节数）；定长类型没有长度可给。
+// · 「解析使能」关闭时 UI 只取行 1，与这里无关。
+#define TREE_INDENT     "   "
+#define TREE_STEM       "│  "
+#define TREE_BRANCH     "├─ "
+#define TREE_LAST       "└─ "
+#define TREE_FOLD_MIN   3
+#define TREE_MAX_DEPTH  16
+#define TREE_MAX_BYTES  60000   /* 软上限：超了就不再展开并标注，交给调用方的定长缓冲 */
+
+typedef struct
+{
+    gxByteBuffer* bb;
+    int truncated;
+} treeWriter;
+
+static int isComposite(DLMS_DATA_TYPE vt)
+{
+    return vt == DLMS_DATA_TYPE_ARRAY || vt == DLMS_DATA_TYPE_STRUCTURE;
+}
+
+// 可参与折叠的定长标量：非复合、非变长
+static int isFixedLeaf(dlmsVARIANT* v)
+{
+    return !isComposite(v->vt) && !hasExplicitLength(v->vt);
+}
+
+// 定长叶子的「值」文本；渲染失败或写不下则返回 0（该叶子不参与折叠）。
+// 64 字节对定长类型（整数/浮点/date-time）绰绰有余 —— 最长的 double 也就 ~24 字符，
+// 所以这个上限只是兜底，不会让真实字段莫名退出折叠。
+static int leafValueText(dlmsVARIANT* v, char* out, int cap)
+{
+    gxByteBuffer tb;
+    int ok = 0;
+    bb_init(&tb);
+    appendReadable(v, &tb);
+    if (tb.size > 0 && tb.size < (uint32_t)cap)
+    {
+        memcpy(out, tb.data, tb.size);
+        out[tb.size] = '\0';
+        ok = 1;
+    }
+    bb_clear(&tb);
+    return ok;
+}
+
+// 从 arr[i] 起、连续「同类型同值」的定长叶子段的结束下标；
+// 首元素不可折、或连续个数 < TREE_FOLD_MIN 时返回 i（= 不折）。
+static uint16_t foldRunEnd(variantArray* arr, uint16_t i)
+{
+    dlmsVARIANT* it;
+    char cur[64], nxt[64];
+    uint16_t j;
+    if (arr == NULL || va_getByIndex(arr, i, &it) != 0 || !isFixedLeaf(it))
+    {
+        return i;
+    }
+    if (!leafValueText(it, cur, (int)sizeof(cur)))
+    {
+        return i;
+    }
+    for (j = (uint16_t)(i + 1); j < arr->size; ++j)
+    {
+        dlmsVARIANT* next;
+        if (va_getByIndex(arr, j, &next) != 0 || next->vt != it->vt || !isFixedLeaf(next))
+        {
+            break;
+        }
+        if (!leafValueText(next, nxt, (int)sizeof(nxt)) || strcmp(cur, nxt) != 0)
+        {
+            break;
+        }
+    }
+    return (uint16_t)((j - i) >= TREE_FOLD_MIN ? j : i);
+}
+
+// 类型头：名字 [+ (元素个数) 或 (字节数)]
+static void appendTypeHead(dlmsVARIANT* v, gxByteBuffer* bb)
+{
+    char tmp[24];
+    bbAppendStr(bb, dlms_dataTypeName((int)v->vt));
+    if (isComposite(v->vt))
+    {
+        snprintf(tmp, sizeof(tmp), "(%u)", (unsigned)(v->Arr != NULL ? v->Arr->size : 0));
+        bbAppendStr(bb, tmp);
+    }
+    else if (hasExplicitLength(v->vt))
+    {
+        uint32_t len = 0;
+        (void)lengthPrefixedBytes(v, &len);
+        snprintf(tmp, sizeof(tmp), "(%u)", (unsigned)len);
+        bbAppendStr(bb, tmp);
+    }
+}
+
+static int typeHeadWidth(dlmsVARIANT* v)
+{
+    gxByteBuffer tb;
+    int n;
+    bb_init(&tb);
+    appendTypeHead(v, &tb);
+    n = (int)tb.size;
+    bb_clear(&tb);
+    return n;
+}
+
+static int uintDigits(uint16_t n)
+{
+    int d = 1;
+    while (n >= 10) { n = (uint16_t)(n / 10); ++d; }
+    return d;
+}
+
+static void appendPadTo(gxByteBuffer* bb, int used, int width)
+{
+    int k;
+    for (k = used; k < width; ++k)
+    {
+        bb_setUInt8(bb, ' ');
+    }
+}
+
+// 一层的两列宽度：**下标列**（`[9..19]` 这类区间比 `[0]` 宽）与**类型列**
+//（折叠行还多一个 ` ×N` 尾巴）。两列一趟遍历同时算出来 —— 步进规则只有一份。
+static void columnWidths(variantArray* arr, int* idxOut, int* typeOut)
+{
+    int idxW = 0, typeW = 0;
+    uint16_t i = 0;
+    if (arr != NULL)
+    {
+        while (i < arr->size)
+        {
+            dlmsVARIANT* it;
+            uint16_t end = foldRunEnd(arr, i);
+            uint16_t last = (end > i) ? (uint16_t)(end - 1) : i;
+            int idxCur, typeCur;
+            if (va_getByIndex(arr, i, &it) != 0)
+            {
+                ++i;
+                continue;
+            }
+            idxCur = 2 + uintDigits(i);                               /* [i] */
+            if (last != i)
+            {
+                idxCur += 2 + uintDigits(last);                       /* ..last */
+            }
+            typeCur = typeHeadWidth(it);
+            if (end > i)
+            {
+                typeCur += 2 + uintDigits((uint16_t)(end - i));       /* " ×N" */
+            }
+            if (idxCur > idxW) { idxW = idxCur; }
+            if (typeCur > typeW) { typeW = typeCur; }
+            i = (end > i) ? end : (uint16_t)(i + 1);
+        }
+    }
+    *idxOut = idxW;
+    *typeOut = typeW;
+}
+
+// 行首：祖先竖线 + 分叉符 + 下标列（左对齐补齐）
+static void appendRowHead(treeWriter* w, int depth, uint32_t lastFlags, int isLast,
+                          const char* label, int idxW)
+{
+    int k;
+    for (k = 0; k < depth; ++k)
+    {
+        bbAppendStr(w->bb, ((lastFlags >> k) & 1u) != 0 ? TREE_INDENT : TREE_STEM);
+    }
+    bbAppendStr(w->bb, isLast ? TREE_LAST : TREE_BRANCH);
+    bbAppendStr(w->bb, label);
+    appendPadTo(w->bb, (int)strlen(label), idxW);
+    bb_setUInt8(w->bb, ' ');
+}
+
+// 提示行：与普通行同一套缩进规则（祖先末位留白、非末位连竖线），
+// 否则末位分支下会多画出一列不该有的竖线。
+static void appendTreeNote(treeWriter* w, int depth, uint32_t lastFlags, const char* text)
+{
+    int k;
+    for (k = 0; k < depth; ++k)
+    {
+        bbAppendStr(w->bb, ((lastFlags >> k) & 1u) != 0 ? TREE_INDENT : TREE_STEM);
+    }
+    bbAppendStr(w->bb, TREE_LAST);
+    bbAppendStr(w->bb, text);
+    bb_setUInt8(w->bb, '\n');
+}
+
+static void renderChildren(treeWriter* w, dlmsVARIANT* parent, int depth, uint32_t lastFlags);
+
+// 叶子行（可能是折叠出来的区间）
+static void appendLeafRow(treeWriter* w, int depth, uint32_t lastFlags, int isLast,
+                          uint16_t from, uint16_t to, dlmsVARIANT* v, int idxW, int typeW)
+{
+    gxByteBuffer th;
+    char label[24], seg[24];
+    int used;
+    bb_init(&th);
+    appendTypeHead(v, &th);
+
+    if (to == from) { snprintf(label, sizeof(label), "[%u]", (unsigned)from); }
+    else { snprintf(label, sizeof(label), "[%u..%u]", (unsigned)from, (unsigned)to); }
+    appendRowHead(w, depth, lastFlags, isLast, label, idxW);
+
+    bb_set(w->bb, th.data, th.size);
+    used = (int)th.size;
+    if (to != from)
+    {
+        snprintf(seg, sizeof(seg), " ×%u", (unsigned)(to - from + 1));
+        bbAppendStr(w->bb, seg);
+        used += (int)strlen(seg);
+    }
+    appendPadTo(w->bb, used, typeW);
+    bb_setUInt8(w->bb, ' ');
+    appendReadable(v, w->bb);
+    bb_setUInt8(w->bb, '\n');
+    bb_clear(&th);
+}
+
+// 复合行：先写自己这一行，再递归展开子层
+static void appendCompositeRow(treeWriter* w, int depth, uint32_t lastFlags, int isLast,
+                               uint16_t index, dlmsVARIANT* v, int idxW, int typeW)
+{
+    gxByteBuffer th;
+    char label[24];
+    bb_init(&th);
+    appendTypeHead(v, &th);
+
+    snprintf(label, sizeof(label), "[%u]", (unsigned)index);
+    appendRowHead(w, depth, lastFlags, isLast, label, idxW);
+    bb_set(w->bb, th.data, th.size);
+    appendPadTo(w->bb, (int)th.size, typeW);
+    bb_setUInt8(w->bb, '\n');
+    bb_clear(&th);
+
+    if (depth + 1 > TREE_MAX_DEPTH)
+    {
+        // 提示行挂在「本该展开的子层」位置上，缩进的祖先标志与兄弟行一致
+        appendTreeNote(w, depth + 1, lastFlags | ((isLast ? 1u : 0u) << depth),
+                       "…（嵌套过深，已省略）");
+        return;
+    }
+    renderChildren(w, v, depth + 1, lastFlags | ((isLast ? 1u : 0u) << depth));
+}
+
+static void renderChildren(treeWriter* w, dlmsVARIANT* parent, int depth, uint32_t lastFlags)
+{
+    variantArray* arr = parent->Arr;
+    int idxW = 0, typeW = 0;
+    uint16_t i = 0;
+    if (arr == NULL)
+    {
+        return;
+    }
+    columnWidths(arr, &idxW, &typeW);
+
+    while (i < arr->size)
+    {
+        dlmsVARIANT* it;
+        uint16_t end;
+        int isLast;
+        if (w->bb->size >= TREE_MAX_BYTES)
+        {
+            w->truncated = 1;
+            return;
+        }
+        if (va_getByIndex(arr, i, &it) != 0)
+        {
+            return;
+        }
+        end = foldRunEnd(arr, i);
+        isLast = ((end > i) ? end : (uint16_t)(i + 1)) >= arr->size;
+
+        if (isComposite(it->vt))
+        {
+            appendCompositeRow(w, depth, lastFlags, isLast, i, it, idxW, typeW);
+            ++i;
+        }
+        else
+        {
+            uint16_t to = (end > i) ? (uint16_t)(end - 1) : i;
+            appendLeafRow(w, depth, lastFlags, isLast, i, to, it, idxW, typeW);
+            i = (uint16_t)(to + 1);
+        }
+    }
+}
+
+// 渲染为「行 1 的原始 HEX + 值树」（UI 的"解析"面板直接显示；
+//「解析使能」关闭时 UI 只取行 1）：
 //   第一行：含类型标签的 HEX
-//   第二行：-> Type: <类型名>[, Length: n], Value: <可读值>
+//   第二行：-> <类型>[(长度)] [值]；复合类型随后逐字段缩进成行
 int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen)
 {
     int written = 0;
@@ -884,25 +1186,41 @@ int dlms_renderValue(dlmsVARIANT* value, char* out, int* outLen)
     }
     {
         gxByteBuffer bb;
+        treeWriter w;
         char* s;
         bb_init(&bb);
 
-        // 第一行：含类型标签的 HEX
+        // 第一行：含类型标签的 HEX（复合类型只能给 tag —— variant 里没有原始编码可回推）
         appendTypedHex(value, &bb);
-        // 第二行：解析结果
-        bbAppendStr(&bb, "\n-> Type: ");
-        bbAppendStr(&bb, dlms_dataTypeName((int)value->vt));
-        if (hasExplicitLength(value->vt))
+
+        // 第二行：顶层类型
+        bbAppendStr(&bb, "\n-> ");
+        appendTypeHead(value, &bb);
+
+        if (isComposite(value->vt))
         {
-            uint32_t len = 0;
-            char tmp[24];
-            (void)lengthPrefixedBytes(value, &len);
-            snprintf(tmp, sizeof(tmp), ", Length: %u", (unsigned)len);
-            bbAppendStr(&bb, tmp);
+            bbAppendStr(&bb, "\n");
+            if (value->Arr != NULL && value->Arr->size > 0)
+            {
+                w.bb = &bb;
+                w.truncated = 0;
+                renderChildren(&w, value, 0, 0u);
+                // 只在**真的提前停下**时标注。不能拿 `bb.size >= TREE_MAX_BYTES` 当条件：
+                // 最后一行正好把输出顶到上限、循环正常收尾时并未丢任何字段，
+                // 那样会误报"已截断"（误报比不报更误导）。
+                if (w.truncated)
+                {
+                    bbAppendStr(&bb, "… 输出已截断（完整帧见「报文」面板）\n");
+                }
+            }
         }
-        bbAppendStr(&bb, ", Value: ");
-        appendReadable(value, &bb);
-        bbAppendStr(&bb, "\n");
+        else
+        {
+            // 叶子：类型头和值同一行
+            bbAppendStr(&bb, " ");
+            appendReadable(value, &bb);
+            bbAppendStr(&bb, "\n");
+        }
 
         bb_setUInt8(&bb, 0);          // 收尾 NUL：bb_toString 要求缓冲区以 0 结尾
         // 注意：bb_toString 返回的是**新 malloc 出来的副本**，所以下面必须 free(s)；

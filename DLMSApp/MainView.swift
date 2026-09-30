@@ -625,7 +625,7 @@ struct MainView: View {
         store.log(.info, "已复制 \(store.logs.count) 条报文到剪贴板")
     }
 
-    /// **复制全部解析结果**（每条本身是两行块，用空行隔开）。
+    /// **复制全部解析结果**（每条本身是多行块：行 1 原始 HEX + 值树，用空行隔开）。
     private func copyAllParsed() {
         let text: String = MainView.parsedText(store.parseEntries)
         guard !text.isEmpty else { return }

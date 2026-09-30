@@ -105,7 +105,7 @@ static unsigned char HLS_OK_PL[] = { 0xC7, 0x01, 0x01, 0x00 };
 //
 // ⚠️ 旧值 `C4 01 C1 00 01 00 09 01 2A` 是**按猜的**写的：解析成 type=1 ✓、invokeId=0xC1 ✗，
 // result=0，随后把 `01 00` 当成 **array(0 个元素)**，`09 01 2A` 成了没人消费的尾巴 →
-// 读出来的"值"是 `-> Type: array, Value: {}`（**空壳**），而 `read ret=0` 照样成立。
+// 读出来的"值"是 `-> array(0)`（**空壳**），而 `read ret=0` 照样成立。
 // 即"read 是有效断言"也是错的 —— 它一直在验一个空数组。改成正确布局后才会真的验到 octet-string。
 static unsigned char GET_OK_PL[] = { 0xC4, 0x01, 0x01, 0x00, 0x09, 0x01, 0x2A };
 // Set-Response-Normal。布局是 `<tag> <type> <invoke-id> <result>` ——
