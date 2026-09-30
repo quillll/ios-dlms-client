@@ -764,10 +764,13 @@ enum ParseBlock {
     /// 取纯值（如 `GRX3` / `74565`）。
     /// 复合类型（`-> array(1)`）没有单值可取 → nil，调用方回退为「不显示值」。
     static func valuePart(of block: String) -> String? {
-        for line in block.split(separator: "\n") {
-            // 用 .whitespacesAndNewlines 而非 .whitespaces：后者**不含 `\r`**
-            //（`\r` 属于 .newlines）—— 若数据里是 CRLF，值尾部会残留一个 `\r`。
-            // C 层目前只发 LF，但这里顺手挡住（实测过：用 .whitespaces 时 "9\r" != "9"）。
+        // 必须按 `isNewline` 切，**不能** `split(separator: "\n")`：
+        // Swift 里 CRLF 是**一个** Character（`"\r\n".count == 1`），它不等于 `"\n"`，
+        // 于是 `separator: "\n"` 对 CRLF 文本一刀都切不开 —— 整段被当成一行，
+        // `hasPrefix("-> ")` 不成立 → 直接返回 nil（CI 上 testCrlfIsTrimmed 就是这么红的）。
+        for line in block.split(whereSeparator: \.isNewline) {
+            // 顺带说一句：`CharacterSet.whitespaces` **不含 `\r`**（`\r` 属于 .newlines），
+            // 所以这里用 .whitespacesAndNewlines 而不是 .whitespaces。
             let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard text.hasPrefix("-> ") else { continue }
             let body = text.dropFirst(3)
